@@ -8,3 +8,6 @@ class SystemStatus(BaseModel):
     dem_tiles: list[str] = Field(default_factory=list)
     dem_regions: list[str] = Field(default_factory=list)
     dem_unmapped_tiles: list[str] = Field(default_factory=list)
+    worldcover_maps: list[str] = Field(default_factory=list)
+    worldcover_regions: list[str] = Field(default_factory=list)
+    worldcover_unmapped_maps: list[str] = Field(default_factory=list)

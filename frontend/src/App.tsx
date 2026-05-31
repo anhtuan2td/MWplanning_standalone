@@ -1,9 +1,10 @@
 import { Upload, RadioTower, Download, RotateCw, Power } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { downloadDem, fetchCalloffRules, fetchSystemStatus, importMwLinks, importSites, planSingleLink, shutdownApp, type PlanRequest } from "./api";
-import { CandidateMap } from "./components/CandidateMap";
-import { TerrainChart } from "./components/TerrainChart";
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
+import { downloadGis, fetchCalloffRules, fetchSystemStatus, importMwLinks, importSites, planSingleLink, shutdownApp, type PlanRequest } from "./api";
 import type { CalloffRules, CandidateLink, PlanResult, SystemStatus } from "./types";
+
+const CandidateMap = lazy(() => import("./components/CandidateMap").then((module) => ({ default: module.CandidateMap })));
+const TerrainChart = lazy(() => import("./components/TerrainChart").then((module) => ({ default: module.TerrainChart })));
 
 const initialForm: PlanRequest = {
   site_name: "NEW_SITE",
@@ -13,6 +14,28 @@ const initialForm: PlanRequest = {
   radius_km: 30,
   band: "AUTO"
 };
+
+function displayError(error: unknown, fallback: string) {
+  if (error instanceof TypeError && error.message === "Failed to fetch") {
+    return "Cannot connect to backend. Open MWPreplanning.exe and use http://127.0.0.1:8000.";
+  }
+  return error instanceof Error ? error.message : fallback;
+}
+
+function closeAppTab() {
+  window.open("", "_self");
+  window.close();
+  window.setTimeout(() => {
+    if (window.closed) return;
+    document.title = "MW Pre-planning Lite closed";
+    document.body.innerHTML = `
+      <main style="font-family: Segoe UI, Arial, sans-serif; padding: 40px; color: #17202a;">
+        <h1 style="font-size: 22px; margin: 0 0 12px;">MW Pre-planning Lite is closed</h1>
+        <p style="margin: 0; font-size: 15px;">The local backend has been shut down. You can close this browser tab.</p>
+      </main>
+    `;
+  }, 400);
+}
 
 export default function App() {
   const [form, setForm] = useState<PlanRequest>(initialForm);
@@ -37,6 +60,7 @@ export default function App() {
     ? Object.entries(systemStatus.site_status_counts).map(([key, value]) => `${key}: ${value}`).join(", ")
     : "-";
   const demRegionText = systemStatus?.dem_regions.length ? systemStatus.dem_regions.join(", ") : "-";
+  const worldCoverRegionText = systemStatus?.worldcover_regions.length ? systemStatus.worldcover_regions.join(", ") : "-";
   const canExportCalloff = Boolean(selected?.calloff && selected.link.status !== "REJECTED");
 
   async function refreshSystemStatus() {
@@ -78,6 +102,7 @@ export default function App() {
     setMessage("Shutting down app...");
     try {
       await shutdownApp();
+      closeAppTab();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Shutdown failed");
       setBusy(false);
@@ -95,6 +120,9 @@ export default function App() {
       const data = await planSingleLink(form, controller.signal);
       setResult(data);
       setSelected(data.best_candidate ?? data.rejected_links[0] ?? null);
+      if (data.summary.total_candidates === 0) {
+        setMessage("No candidate sites found. Import site CSV or increase radius.");
+      }
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
         setMessage("Scan cancelled");
@@ -122,7 +150,7 @@ export default function App() {
       setMessage(`CSV imported: ${data.inserted} inserted, ${data.updated} updated, ${data.skipped} skipped`);
       refreshSystemStatus();
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Import failed");
+      setMessage(displayError(error, "Import failed"));
     } finally {
       setBusy(false);
     }
@@ -136,27 +164,27 @@ export default function App() {
       setMessage(`MW links imported: ${data.imported}`);
       refreshSystemStatus();
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "MW link import failed");
+      setMessage(displayError(error, "MW link import failed"));
     } finally {
       setBusy(false);
     }
   }
 
-  async function onDownloadDem() {
+  async function onDownloadGis() {
     setBusy(true);
-    setMessage("Downloading DEM tiles...");
+    setMessage("Downloading GIS tiles...");
     try {
-      const data = await downloadDem({
+      const data = await downloadGis({
         latitude: form.latitude,
         longitude: form.longitude,
         radius_km: form.radius_km
       });
       setMessage(
-        `DEM tiles: ${data.downloaded_tiles.length} downloaded, ${data.existing_tiles.length} existing, ${data.failed_tiles.length} failed`
+        `GIS download complete. DEM: ${data.dem.downloaded_tiles.length} downloaded, ${data.dem.existing_tiles.length} existing, ${data.dem.failed_tiles.length} failed; WorldCover: ${data.worldcover.downloaded_tiles.length} downloaded, ${data.worldcover.existing_tiles.length} existing, ${data.worldcover.failed_tiles.length} failed`
       );
       refreshSystemStatus();
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "DEM download failed");
+      setMessage(error instanceof Error ? error.message : "GIS download failed");
     } finally {
       setBusy(false);
     }
@@ -309,9 +337,9 @@ export default function App() {
           </div>
         )}
 
-        <button onClick={onDownloadDem} disabled={busy}>
+        <button onClick={onDownloadGis} disabled={busy}>
           <Download size={18} />
-          Download DEM
+          Download GIS
         </button>
 
         <button onClick={refreshWorkspace} disabled={busy}>
@@ -378,15 +406,19 @@ export default function App() {
           <div><strong>{systemStatus?.total_sites ?? 0}</strong><span>Imported sites</span></div>
           <div><strong>{systemStatus?.total_mw_links ?? 0}</strong><span>MW links</span></div>
           <div><strong>{systemStatus?.dem_tiles.length ?? 0}</strong><span>DEM tiles</span></div>
+          <div><strong>{systemStatus?.worldcover_maps.length ?? 0}</strong><span>Cover maps</span></div>
           <div><strong>{result?.summary.avg_seconds_per_link?.toFixed(3) ?? "-"}</strong><span>Avg sec/link</span></div>
           <div><strong>{result?.summary.elapsed_seconds?.toFixed(2) ?? "-"}</strong><span>Total sec</span></div>
         </div>
         <div className="statusStrip">
           <span>Site status: {statusText}</span>
           <span>DEM regions: {demRegionText}</span>
+          <span>Cover regions: {worldCoverRegionText}</span>
         </div>
 
-        <CandidateMap origin={form} selected={selected} candidates={rows} />
+        <Suspense fallback={<div className="mapPane loadingPane">Loading map...</div>}>
+          <CandidateMap origin={form} selected={selected} candidates={rows} />
+        </Suspense>
 
         <div className="lower">
           <div className="tablePane">
@@ -423,7 +455,9 @@ export default function App() {
               </tbody>
             </table>
           </div>
-          <TerrainChart link={selected} />
+          <Suspense fallback={<div className="chartPane loadingPane">Loading chart...</div>}>
+            <TerrainChart link={selected} />
+          </Suspense>
         </div>
       </section>
     </main>

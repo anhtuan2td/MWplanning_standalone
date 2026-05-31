@@ -29,9 +29,9 @@ with httpx.Client(timeout=60.0) as client:
         r = client.post(f"{BASE}/mw-links/import", files={'file': ('existing_links.csv', f, 'text/csv')})
     print(r.status_code, r.text)
 
-    print('\n=== DEM DOWNLOAD ===')
+    print('\n=== GIS DOWNLOAD ===')
     payload = {'latitude': 13.74777, 'longitude': 109.19243, 'radius_km': 30}
-    r = client.post(f"{BASE}/dem/download", json=payload)
+    r = client.post(f"{BASE}/gis/download", json=payload)
     print(r.status_code)
     print(r.text)
 

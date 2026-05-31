@@ -126,3 +126,24 @@ class DemDownloadResult(BaseModel):
     downloaded_tiles: list[str]
     existing_tiles: list[str]
     failed_tiles: list[str] = Field(default_factory=list)
+
+
+class WorldCoverDownloadRequest(BaseModel):
+    latitude: float
+    longitude: float
+    radius_km: float = 30
+
+
+class WorldCoverDownloadResult(BaseModel):
+    requested_tiles: list[str]
+    downloaded_tiles: list[str]
+    existing_tiles: list[str]
+    failed_tiles: list[str] = Field(default_factory=list)
+
+
+class GisDownloadResult(BaseModel):
+    dem: DemDownloadResult
+    worldcover: WorldCoverDownloadResult
+
+
+GisDownloadRequest = DemDownloadRequest

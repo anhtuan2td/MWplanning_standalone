@@ -36,6 +36,19 @@ def _port_in_use(host: str, port: int) -> bool:
         return False
 
 
+def _open_browser(url: str) -> None:
+    try:
+        if sys.platform == "win32":
+            os.startfile(url)  # type: ignore[attr-defined]
+            return
+        webbrowser.open(url, new=2, autoraise=True)
+    except Exception:
+        try:
+            webbrowser.open(url, new=2, autoraise=True)
+        except Exception:
+            pass
+
+
 def main() -> None:
     global _INSTANCE_HANDLE
 
@@ -49,18 +62,17 @@ def main() -> None:
     _INSTANCE_HANDLE = _try_acquire_instance_lock()
     if _INSTANCE_HANDLE is None:
         if open_browser != "0":
-            webbrowser.open(url, new=2, autoraise=True)
+            _open_browser(url)
         return
 
     if _port_in_use(host, port):
         print(f"Port {port} is already in use. Close the other service or set PORT to a free port.")
+        if open_browser != "0":
+            _open_browser(url)
         return
 
     if open_browser != "0":
-        try:
-            webbrowser.open(url, new=2, autoraise=True)
-        except Exception:
-            pass
+        _open_browser(url)
 
     from app.main import app
 

@@ -1,6 +1,14 @@
 import type { CalloffRules, PlanResult, SystemStatus } from "./types";
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? window.location.origin;
+function resolveApiBase() {
+  const configured = import.meta.env.VITE_API_BASE;
+  if (configured) return configured;
+  if (window.location.protocol === "file:") return "http://127.0.0.1:8000";
+  if (window.location.port === "5173") return "http://127.0.0.1:8000";
+  return window.location.origin;
+}
+
+const API_BASE = resolveApiBase();
 export const MAP_TILE_URL = import.meta.env.VITE_MAP_TILE_URL ?? "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
 
 export type PlanRequest = {
@@ -17,6 +25,18 @@ export type DemDownloadResult = {
   downloaded_tiles: string[];
   existing_tiles: string[];
   failed_tiles: string[];
+};
+
+export type WorldCoverDownloadResult = {
+  requested_tiles: string[];
+  downloaded_tiles: string[];
+  existing_tiles: string[];
+  failed_tiles: string[];
+};
+
+export type GisDownloadResult = {
+  dem: DemDownloadResult;
+  worldcover: WorldCoverDownloadResult;
 };
 
 export async function importSites(file: File) {
@@ -52,8 +72,8 @@ export async function shutdownApp(): Promise<void> {
   if (!response.ok) throw new Error(await response.text());
 }
 
-export async function downloadDem(payload: { latitude: number; longitude: number; radius_km: number }): Promise<DemDownloadResult> {
-  const response = await fetch(`${API_BASE}/dem/download`, {
+export async function downloadGis(payload: { latitude: number; longitude: number; radius_km: number }): Promise<GisDownloadResult> {
+  const response = await fetch(`${API_BASE}/gis/download`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)

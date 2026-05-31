@@ -83,6 +83,9 @@ export type SystemStatus = {
   dem_tiles: string[];
   dem_regions: string[];
   dem_unmapped_tiles: string[];
+  worldcover_maps: string[];
+  worldcover_regions: string[];
+  worldcover_unmapped_maps: string[];
 };
 
 export type CalloffRules = {

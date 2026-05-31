@@ -62,18 +62,3 @@ if (-Not (Test-Path "$root\packaging\build_exe.ps1")) {
 }
 & "$root\packaging\build_exe.ps1"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-Write-Host "Installing packaging dependency..."
-& $python -m pip install pyinstaller
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-Write-Host "Packaging EXE with PyInstaller..."
-& $python -m PyInstaller --clean --onefile --name MWPreplanning `
-    --collect-all rasterio `
-    --add-data "config\planner_config.yaml;config" `
-    --add-data "data\mw_links\existing_links.csv;data\mw_links" `
-    --add-data "frontend\dist;frontend\dist" `
-    backend\run.py
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-Write-Host "Done. Binary should be in dist\MWPreplanning.exe"

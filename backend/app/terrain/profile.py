@@ -1,6 +1,6 @@
 import math
 
-from app.core.config import get_planner_config
+from app.core.config import get_planner_config, get_settings
 from app.schemas.planning import Endpoint, TerrainProfile
 from app.services.geo import curvature_bulge_m, haversine_km, interpolate_points
 from app.terrain.dem import DemSampler
@@ -17,10 +17,14 @@ def generate_profile(a: Endpoint, b: Endpoint, step_m: float | None = None) -> T
     distances: list[float] = []
     terrain: list[float] = []
 
+    use_surface = get_settings().worldcover_apply_height_offsets
     for index, (lat, lon) in enumerate(points):
         d = distance_m * index / (samples - 1)
         fallback = a.ground_elevation_m + (b.ground_elevation_m - a.ground_elevation_m) * index / (samples - 1)
-        elev = sampler.sample(lat, lon, fallback)
+        if use_surface:
+            elev = sampler.sample_surface(lat, lon, fallback)
+        else:
+            elev = sampler.sample(lat, lon, fallback)
         distances.append(round(d, 2))
         terrain.append(round(elev, 2))
 

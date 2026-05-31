@@ -11,6 +11,7 @@ from app.schemas.planning import (
     LinkCheckResult,
     DemDownloadRequest,
     DemDownloadResult,
+    GisDownloadResult,
     SingleLinkPlanRequest,
     SingleLinkPlanResult,
     TerrainProfile,
@@ -101,9 +102,18 @@ def terrain_grid(request: TerrainGridRequest) -> TerrainGridResult:
     return generate_grid(request)
 
 
-@router.post("/dem/download", response_model=DemDownloadResult)
-def dem_download(request: DemDownloadRequest) -> DemDownloadResult:
-    return download_dem_tiles(request.latitude, request.longitude, request.radius_km)
+@router.post("/dem/download", response_model=GisDownloadResult)
+def dem_download(request: DemDownloadRequest) -> GisDownloadResult:
+    from app.terrain.downloader import download_gis_tiles
+
+    return download_gis_tiles(request.latitude, request.longitude, request.radius_km)
+
+
+@router.post("/gis/download", response_model=GisDownloadResult)
+def gis_download(request: DemDownloadRequest) -> GisDownloadResult:
+    from app.terrain.downloader import download_gis_tiles
+
+    return download_gis_tiles(request.latitude, request.longitude, request.radius_km)
 
 
 @router.post("/rf/check-link", response_model=LinkCheckResult)

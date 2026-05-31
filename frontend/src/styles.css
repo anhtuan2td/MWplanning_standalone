@@ -175,8 +175,8 @@ button:disabled {
 
 .summary {
   display: grid;
-  grid-template-columns: repeat(9, minmax(105px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(10, minmax(72px, 1fr));
+  gap: 8px;
 }
 
 .summary div,
@@ -189,13 +189,24 @@ button:disabled {
 }
 
 .summary div {
-  padding: 14px;
+  min-width: 0;
+  padding: 10px 8px;
   display: grid;
-  gap: 3px;
+  gap: 2px;
 }
 
 .summary strong {
-  font-size: 22px;
+  overflow: hidden;
+  font-size: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.summary span {
+  overflow: hidden;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .statusStrip {
@@ -224,6 +235,14 @@ button:disabled {
     linear-gradient(90deg, #dce5ec 1px, transparent 1px),
     #f4f7f9;
   background-size: 32px 32px;
+}
+
+.loadingPane {
+  display: grid;
+  place-items: center;
+  min-height: 100%;
+  color: #64748b;
+  font-size: 13px;
 }
 
 .siteLabel {

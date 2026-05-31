@@ -4,9 +4,9 @@ import json
 BASE = 'http://127.0.0.1:8000'
 
 with httpx.Client(timeout=120.0) as client:
-    print('=== DEM DOWNLOAD ===')
+    print('=== GIS DOWNLOAD ===')
     payload = {'latitude': 13.74777, 'longitude': 109.19243, 'radius_km': 30}
-    r = client.post(f'{BASE}/dem/download', json=payload)
+    r = client.post(f'{BASE}/gis/download', json=payload)
     print(r.status_code)
     print(r.text[:2000])
 

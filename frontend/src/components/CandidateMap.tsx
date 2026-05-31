@@ -6,6 +6,8 @@ import { MAP_TILE_URL } from "../api";
 import type { CandidateLink } from "../types";
 import type { PlanRequest } from "../api";
 
+const SELECTED_LINK_MAX_ZOOM = 17;
+
 function siteIcon(label: string, variant: "origin" | "candidate") {
   return L.divIcon({
     className: `siteLabel ${variant === "origin" ? "originLabel" : "candidateLabel"}`,
@@ -25,12 +27,32 @@ function MapAutoView({ origin, candidates, selected }: Props) {
   const map = useMap();
 
   useEffect(() => {
-    const points: [number, number][] = [[origin.latitude, origin.longitude]];
     if (selected) {
-      points.push([selected.candidate.latitude, selected.candidate.longitude]);
-    } else {
-      points.push(...candidates.map((item) => [item.candidate.latitude, item.candidate.longitude] as [number, number]));
+      requestAnimationFrame(() => {
+        map.invalidateSize();
+        const originPoint = L.latLng(origin.latitude, origin.longitude);
+        const candidatePoint = L.latLng(selected.candidate.latitude, selected.candidate.longitude);
+        const bounds = L.latLngBounds([originPoint, candidatePoint]);
+        const size = map.getSize();
+        const originPixel = map.project(originPoint, 0);
+        const candidatePixel = map.project(candidatePoint, 0);
+        const baseWidthPx = Math.abs(candidatePixel.x - originPixel.x);
+        const baseHeightPx = Math.abs(candidatePixel.y - originPixel.y);
+        const widthScale = baseWidthPx > 0 ? (size.x * 0.5) / baseWidthPx : Number.POSITIVE_INFINITY;
+        const heightScale = baseHeightPx > 0 ? (size.y * 0.8) / baseHeightPx : Number.POSITIVE_INFINITY;
+        const scale = Math.min(widthScale, heightScale);
+        const zoom = Number.isFinite(scale) && scale > 0
+          ? Math.min(SELECTED_LINK_MAX_ZOOM, Math.max(4, Math.log2(scale)))
+          : SELECTED_LINK_MAX_ZOOM;
+        map.flyTo(bounds.getCenter(), zoom, { animate: true, duration: 0.45 });
+      });
+      return;
     }
+
+    const points: [number, number][] = [
+      [origin.latitude, origin.longitude],
+      ...candidates.map((item) => [item.candidate.latitude, item.candidate.longitude] as [number, number])
+    ];
 
     if (points.length === 1) {
       map.setView(points[0], 11);

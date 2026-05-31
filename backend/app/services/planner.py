@@ -5,7 +5,7 @@ from math import atan2, degrees
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.config import get_band_config, get_planner_config
+from app.core.config import get_band_config, get_planner_config, get_settings
 from app.rf.fresnel import fresnel_clearance
 from app.rf.los import check_los
 from app.schemas.planning import (
@@ -198,12 +198,13 @@ def check_link(request: LinkCheckRequest) -> LinkCheckResult:
     band = request.band if request.band and request.band != "AUTO" else _auto_band(distance_km)
     get_band_config(band)
     sampler = DemSampler()
-    request.a.ground_elevation_m = sampler.sample(
+    sample_elevation = sampler.sample_surface if get_settings().worldcover_apply_height_offsets else sampler.sample
+    request.a.ground_elevation_m = sample_elevation(
         request.a.latitude,
         request.a.longitude,
         fallback_m=request.a.ground_elevation_m,
     )
-    request.b.ground_elevation_m = sampler.sample(
+    request.b.ground_elevation_m = sample_elevation(
         request.b.latitude,
         request.b.longitude,
         fallback_m=request.b.ground_elevation_m,
@@ -246,10 +247,12 @@ def plan_single_link(db: Session, request: SingleLinkPlanRequest) -> SingleLinkP
         for candidate in search_sites(db, request.latitude, request.longitude, radius)
         if _normalize_site_code(candidate.site_code) != new_site_code
     ]
+    sampler = DemSampler()
+    sample_elevation = sampler.sample_surface if get_settings().worldcover_apply_height_offsets else sampler.sample
     new_site = Endpoint(
         latitude=request.latitude,
         longitude=request.longitude,
-        ground_elevation_m=DemSampler().sample(request.latitude, request.longitude, fallback_m=0),
+        ground_elevation_m=sample_elevation(request.latitude, request.longitude, fallback_m=0),
         tower_height_m=request.tower_height_m,
     )
 
@@ -315,10 +318,12 @@ async def plan_single_link_cancellable(
         for candidate in search_sites(db, request.latitude, request.longitude, radius)
         if _normalize_site_code(candidate.site_code) != new_site_code
     ]
+    sampler = DemSampler()
+    sample_elevation = sampler.sample_surface if get_settings().worldcover_apply_height_offsets else sampler.sample
     new_site = Endpoint(
         latitude=request.latitude,
         longitude=request.longitude,
-        ground_elevation_m=DemSampler().sample(request.latitude, request.longitude, fallback_m=0),
+        ground_elevation_m=sample_elevation(request.latitude, request.longitude, fallback_m=0),
         tower_height_m=request.tower_height_m,
     )
 

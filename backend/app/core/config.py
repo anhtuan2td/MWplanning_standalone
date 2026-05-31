@@ -51,6 +51,17 @@ class Settings(BaseSettings):
     )
     planner_config_path: Path = _resource_root() / "config" / "planner_config.yaml"
     dem_directory: Path = _default_data_directory() / "dem"
+    dem_source: str = "copernicus"
+    copernicus_dem_base_url: str = "https://copernicus-dem-30m.s3.amazonaws.com"
+    worldcover_directory: Path = _default_data_directory() / "worldcover"
+    worldcover_base_url: str = "https://esa-worldcover.s3.eu-central-1.amazonaws.com/v100/2020/map"
+    worldcover_apply_height_offsets: bool = True
+    worldcover_height_offsets: dict[int, float] = Field(
+        default_factory=lambda: {
+            10: 5.0,
+            50: 15.0,
+        }
+    )
     mw_links_directory: Path = _default_data_directory() / "mw_links"
     default_mw_links_file: Path = _resource_root() / "data" / "mw_links" / "existing_links.csv"
     frontend_static_dir: Path = _resource_root() / "frontend" / "dist"

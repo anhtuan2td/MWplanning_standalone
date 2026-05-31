@@ -8,7 +8,7 @@ Tai lieu nay huong dan su dung tu dau voi gia dinh mac dinh la may moi chua co d
 
 Dung khi may tinh co Internet.
 
-- Co the bam `Download DEM` tren UI de tai DEM tu nguon online.
+- Co the bam `Download GIS` tren UI de tai GIS du lieu tu nguon online (DEM + WorldCover).
 - Phu hop cho may ca nhan, may test, hoac moi truong duoc phep truy cap Internet.
 - Basemap co the dung OpenStreetMap neu cau hinh frontend cho phep truy cap Internet.
 
@@ -16,7 +16,7 @@ Dung khi may tinh co Internet.
 
 Dung khi may tinh nam trong mang noi bo, khong co Internet.
 
-- Khong dung nut `Download DEM` neu mang noi bo khong cho truy cap nguon DEM online.
+- Khong dung nut `Download GIS` neu mang noi bo khong cho truy cap nguon GIS online.
 - Can copy san file DEM `.tif` vao thu muc `data\dem` nam canh file EXE.
 - Neu can ban do nen cau hinh tile server noi bo; neu khong co, app van chay duoc voi grid/background co ban.
 - Du lieu site va MW links duoc import tu file CSV noi bo.
@@ -42,10 +42,11 @@ dist\data\mwplanner.db
 dist\data\mw_links\current_links.csv
 ```
 
-DEM co the tai lai neu may co Internet. Neu dung Intranet thi copy DEM vao:
+GIS du lieu co the tai lai neu may co Internet. Neu dung Intranet thi copy du lieu vao:
 
 ```text
-dist\data\dem\
+ dist\data\dem\
+ dist\data\worldcover\
 ```
 
 ## 3. Mo va tat phan mem
@@ -147,7 +148,7 @@ Dien cac truong ben trai:
 ### Neu dung Internet
 
 1. Nhap dung latitude/longitude/radius cua site moi.
-2. Bam `Download DEM`.
+2. Bam `Download GIS`.
 3. Doi thong bao:
 
 ```text
@@ -271,7 +272,7 @@ Bam `Refresh` de:
 3. Import site CSV.
 4. Import MW links CSV.
 5. Nhap new site latitude/longitude/radius.
-6. Internet: bam `Download DEM`.
+6. Internet: bam `Download GIS`.
 7. Intranet: copy DEM `.tif` vao `dist\data\dem`, sau do bam `Refresh`.
 8. Bam `Run planning`.
 9. Chon candidate phu hop.

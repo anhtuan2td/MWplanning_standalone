@@ -43,7 +43,7 @@ Aliases such as `lat`, `lon`, `tower_height`, and `available_height` are also ac
 
 ## User Guide
 
-See [docs/USER_GUIDE.md](docs/USER_GUIDE.md) for the end-to-end workflow: open the web UI, import site/MW CSV files, enter a new site, download DEM, run scan, select a route, inspect terrain, and export calloff.
+See [docs/USER_GUIDE.md](docs/USER_GUIDE.md) for the end-to-end workflow: open the web UI, import site/MW CSV files, enter a new site, download GIS, run scan, select a route, inspect terrain, and export calloff.
 
 ## DEM Data
 
@@ -55,7 +55,7 @@ data/dem/
 
 If no DEM is present, the engine falls back to endpoint elevation interpolation so the system remains runnable for functional testing.
 
-The frontend also has a **Download DEM** button. It uses the current latitude, longitude, and radius to ask the backend to calculate required 1x1 degree SRTM/Skadi tiles, skip files already present in `data/dem/`, download missing `.hgt.gz` files, and convert them to GeoTIFF. This requires Internet access and is optional; for internal/offline deployment, copy prepared GeoTIFF files into `data/dem/` instead.
+The frontend also has a **Download GIS** button. It uses the current latitude, longitude, and radius to download both DEM tiles and ESA WorldCover data, storing DEM in `data/dem/` and WorldCover in `data/worldcover/`. This requires Internet access and is optional; for internal/offline deployment, copy prepared files into the appropriate data directories instead.
 
 ## Main APIs
 
@@ -64,7 +64,7 @@ The frontend also has a **Download DEM** button. It uses the current latitude, l
 - `POST /sites/import`
 - `GET /sites/search?lat=16.032&lon=108.221&radius_km=30`
 - `POST /terrain/profile`
-- `POST /dem/download`
+- `POST /gis/download`
 - `POST /rf/check-link`
 - `POST /plan/single-link`
 

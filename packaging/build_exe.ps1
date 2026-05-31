@@ -1,4 +1,5 @@
-$root = Split-Path -Path $MyInvocation.MyCommand.Path -Parent
+$scriptRoot = Split-Path -Path $MyInvocation.MyCommand.Path -Parent
+$root = Split-Path -Path $scriptRoot -Parent
 Set-Location $root
 $ErrorActionPreference = "Stop"
 
@@ -17,7 +18,7 @@ function Get-NodeExecutable {
         return $node.Source
     }
 
-    $portableRoot = Join-Path $root "..\.nodejs"
+    $portableRoot = Join-Path $root ".nodejs"
     $nodeExe = Get-ChildItem -Path $portableRoot -Filter node.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($nodeExe) {
         return $nodeExe.FullName
@@ -27,7 +28,7 @@ function Get-NodeExecutable {
 }
 
 function Install-PortableNode {
-    $portableRoot = Join-Path $root "..\.nodejs"
+    $portableRoot = Join-Path $root ".nodejs"
     $nodeUrl = "https://nodejs.org/dist/v22.17.1/node-v22.17.1-win-x64.zip"
     $zipPath = Join-Path $portableRoot "node.zip"
 
@@ -60,14 +61,14 @@ $env:PATH = "${nodeDir};$env:PATH"
 
 $npmCli = Join-Path (Split-Path $nodeExe -Parent) "node_modules\npm\bin\npm-cli.js"
 if (-Not (Test-Path $npmCli)) {
-    $npmCli = Join-Path $root "..\.nodejs\node-v22.17.1-win-x64\node_modules\npm\bin\npm-cli.js"
+    $npmCli = Join-Path $root ".nodejs\node-v22.17.1-win-x64\node_modules\npm\bin\npm-cli.js"
 }
 if (-Not (Test-Path $npmCli)) {
     Write-Error "npm CLI not found. Please ensure Node.js extraction completed successfully."
     exit 1
 }
 
-Push-Location ..\frontend
+Push-Location frontend
 & $nodeExe $npmCli install
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 & $nodeExe $npmCli run build
