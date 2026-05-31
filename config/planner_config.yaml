@@ -1,0 +1,33 @@
+candidate_radius_km: 30
+minimum_los_margin_m: 1
+
+bands:
+  6GHz:
+    max_distance_km: 45
+    min_fresnel_clearance_percent: 60
+  11GHz:
+    max_distance_km: 11
+    min_fresnel_clearance_percent: 60
+  15GHz:
+    max_distance_km: 8
+    min_fresnel_clearance_percent: 60
+  18GHz:
+    max_distance_km: 5
+    min_fresnel_clearance_percent: 60
+
+sampling:
+  terrain_step_m: 30
+
+scoring:
+  los_weight: 40
+  fresnel_weight: 30
+  distance_weight: 15
+  tower_margin_weight: 15
+  diverse_routing_bonus: 8
+  overload_penalty: 30
+  overlink_penalty: 25
+  extended_rru_penalty: 10
+
+calloff:
+  azimuth_overlap_threshold_deg: 15
+  overlap_height_step_down_m: 3

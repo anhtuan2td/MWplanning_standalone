@@ -1,0 +1,6 @@
+site_code,site_name,latitude,longitude,tower_height_m,available_height_m,status,owner,region,overload,VH
+BDH0001,TR?M MACRO,13.76232,109.21494,50,50,active,Khu v?c 2,BÃ¬nh ??nh,,1
+BDH0001-41,TRAM SMALL CELL,13.75984,109.21739,7,7,active,Khu v?c 2,BÃ¬nh ??nh,,
+BDH0001-42,TRAM SMALL CELL,13.76015,109.21761,7,7,active,Khu v?c 2,BÃ¬nh ??nh,,
+BDH0001-43,TRAM SMALL CELL,13.76069,109.21793,7,7,active,Khu v?c 2,BÃ¬nh ??nh,,
+BDH0003,TR?M MACRO,13.81428,109.14671,48,48,active,Khu v?c 2,BÃ¬nh ??nh,,1

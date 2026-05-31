@@ -1,0 +1,38 @@
+# Build and runtime artifacts
+/dist/
+/build/
+/frontend/dist/
+/.nodejs/
+/*.exe
+
+# Python
+__pycache__/
+*.pyc
+
+# Virtual env
+/.venv/
+
+# IDE
+.vscode/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+node_modules/
+dist/
+build/
+.env
+*.log
+postgres_data/
+reports/
+release/
+data/dem/*.hgt
+data/dem/*.hgt.gz
+data/dem/*.tif
+data/dem/*.tiff
+data/sites/*.csv
+!data/sites/sample_sites.csv
+data/mw_links/*.csv
+data/mw_links/*.xlsx
+!data/mw_links/existing_links.csv

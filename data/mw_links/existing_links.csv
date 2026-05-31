@@ -1,0 +1,5 @@
+Line,Frequency,Distance,Device,A end,Band (A),Antena diameter (A),Elevation (A),B end,Band (B),Antena diameter (B),,Elevation (B)
+BTN9706-BTN9701-02,7GHz,82.1,Ceragon_IP20N,BTN9706,High,3.7,60,BTN9701,Low,3.7,,60
+KHA0689-KHA0515-01,8GHz,14.1,Ceragon_IP20C,KHA0689,Low,1.2,35,KHA0515,High,1.2,,28
+KHAA028-KHA0789-01,7GHz,10.2,NEC_iPasolink_100,KHA0789,Low,1.2,40,KHAA028,High,0.6,,12
+GLI0306-GLI0546-01,7GHz,8,ERICSSON_ML6651/3,GLI0306,Low,0.9,45,GLI0546,High,0.9,,45
