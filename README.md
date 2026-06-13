@@ -68,6 +68,24 @@ The frontend also has a **Download GIS** button. It uses the current latitude, l
 - `POST /rf/check-link`
 - `POST /plan/single-link`
 
+## Run via Telegram
+
+Create a bot with BotFather, then run the local long-polling bot:
+
+```powershell
+$env:MW_TELEGRAM_BOT_TOKEN = "<telegram bot token>"
+$env:MW_DATABASE_URL = "sqlite:///$(pwd)\data\mwplanner.db"
+.\.venv\Scripts\python.exe .\scripts\telegram_bot.py
+```
+
+Example Telegram command:
+
+```text
+/plan site DN001 16.032 108.221 radius 30 height 30
+```
+
+The Telegram bot checks required DEM and WorldCover files first. If GIS is missing, it downloads GIS automatically before running planning.
+
 ## Local Backend Commands
 
 From the repository root after installing `requirements.txt`:

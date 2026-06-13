@@ -31,6 +31,10 @@ data/dem/*.hgt
 data/dem/*.hgt.gz
 data/dem/*.tif
 data/dem/*.tiff
+data/worldcover/
+data/*.db
+data/*.sqlite
+data/*.sqlite3
 data/sites/*.csv
 !data/sites/sample_sites.csv
 data/mw_links/*.csv

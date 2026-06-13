@@ -18,19 +18,22 @@ select {
   font: inherit;
 }
 
-.shell {
+.chatShell {
   min-height: 100vh;
   display: grid;
-  grid-template-columns: 330px 1fr;
+  grid-template-columns: minmax(360px, 420px) 1fr;
 }
 
-.sidebar {
+.chatPanel {
   background: #ffffff;
   border-right: 1px solid #d6dbe3;
-  padding: 22px;
+  padding: 18px;
   display: flex;
   flex-direction: column;
-  gap: 15px;
+  gap: 12px;
+  min-height: 100vh;
+  max-height: 100vh;
+  overflow: hidden;
 }
 
 .brand {
@@ -109,6 +112,111 @@ button:disabled {
 
 .upload input {
   display: none;
+}
+
+.chatMessages {
+  min-height: 260px;
+  flex: 1;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #d6dbe3;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.chatBubble {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 9px;
+  align-items: start;
+}
+
+.chatBubble p {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid #d6dbe3;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #172033;
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.chatBubble.user {
+  grid-template-columns: minmax(0, 1fr) 38px;
+}
+
+.chatBubble.user .bubbleIcon {
+  order: 2;
+}
+
+.chatBubble.user p {
+  order: 1;
+  background: #0f766e;
+  border-color: #0f766e;
+  color: #ffffff;
+}
+
+.chatBubble.system p {
+  background: #fff7ed;
+  border-color: #fed7aa;
+  color: #9a3412;
+}
+
+.bubbleIcon {
+  width: 38px;
+  height: 30px;
+  border-radius: 6px;
+  background: #e2e8f0;
+  color: #334155;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.chatComposer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 44px;
+  gap: 8px;
+}
+
+.chatComposer input {
+  height: 44px;
+}
+
+.iconButton {
+  min-width: 44px;
+  padding: 0;
+}
+
+.quickActions,
+.fileActions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.quickActions button,
+.fileActions button,
+.fileActions .upload {
+  min-width: 0;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.paramPanel {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #d6dbe3;
+  border-radius: 8px;
+  background: #f8fafc;
 }
 
 .message {
@@ -383,13 +491,15 @@ tbody tr {
 }
 
 @media (max-width: 1050px) {
-  .shell {
+  .chatShell {
     grid-template-columns: 1fr;
   }
 
-  .sidebar {
+  .chatPanel {
     border-right: 0;
     border-bottom: 1px solid #d6dbe3;
+    min-height: auto;
+    max-height: none;
   }
 
   .lower,
@@ -399,5 +509,21 @@ tbody tr {
 
   .chartPane {
     position: static;
+  }
+}
+
+@media (max-width: 560px) {
+  .quickActions,
+  .fileActions,
+  .grid2 {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .summary {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .workspace {
+    padding: 12px;
   }
 }

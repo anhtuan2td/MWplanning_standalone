@@ -1,6 +1,26 @@
-import { Upload, RadioTower, Download, RotateCw, Power } from "lucide-react";
-import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
-import { downloadGis, fetchCalloffRules, fetchSystemStatus, importMwLinks, importSites, planSingleLink, shutdownApp, type PlanRequest } from "./api";
+import {
+  Bot,
+  Download,
+  FileJson,
+  MapPinned,
+  Power,
+  RadioTower,
+  RefreshCw,
+  Send,
+  SlidersHorizontal,
+  Upload
+} from "lucide-react";
+import { FormEvent, Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
+import {
+  downloadGis,
+  fetchCalloffRules,
+  fetchSystemStatus,
+  importMwLinks,
+  importSites,
+  planSingleLink,
+  shutdownApp,
+  type PlanRequest
+} from "./api";
 import type { CalloffRules, CandidateLink, PlanResult, SystemStatus } from "./types";
 
 const CandidateMap = lazy(() => import("./components/CandidateMap").then((module) => ({ default: module.CandidateMap })));
@@ -15,9 +35,15 @@ const initialForm: PlanRequest = {
   band: "AUTO"
 };
 
+type ChatMessage = {
+  id: string;
+  role: "assistant" | "user" | "system";
+  text: string;
+};
+
 function displayError(error: unknown, fallback: string) {
   if (error instanceof TypeError && error.message === "Failed to fetch") {
-    return "Cannot connect to backend. Open MWPreplanning.exe and use http://127.0.0.1:8000.";
+    return "Không kết nối được backend. Hãy mở MWPreplanning.exe và dùng http://127.0.0.1:8000.";
   }
   return error instanceof Error ? error.message : fallback;
 }
@@ -37,6 +63,122 @@ function closeAppTab() {
   }, 400);
 }
 
+function id() {
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function formatCandidate(row: CandidateLink) {
+  return `${row.candidate.site_code}: ${row.link.distance_km.toFixed(2)} km, ${row.link.band}, score ${row.link.score.toFixed(1)}, ${row.link.status}`;
+}
+
+function tileName(latFloor: number, lonFloor: number) {
+  const ns = latFloor >= 0 ? "N" : "S";
+  const ew = lonFloor >= 0 ? "E" : "W";
+  return `${ns}${Math.abs(latFloor).toString().padStart(2, "0")}${ew}${Math.abs(lonFloor).toString().padStart(3, "0")}`;
+}
+
+function tilesForRadius(latitude: number, longitude: number, radiusKm: number) {
+  const latDelta = radiusKm / 111.0;
+  const lonScale = Math.max(Math.cos((latitude * Math.PI) / 180), 0.1);
+  const lonDelta = radiusKm / (111.0 * lonScale);
+  const minLat = Math.floor(latitude - latDelta);
+  const maxLat = Math.floor(latitude + latDelta);
+  const minLon = Math.floor(longitude - lonDelta);
+  const maxLon = Math.floor(longitude + lonDelta);
+  const tiles: string[] = [];
+  for (let lat = minLat; lat <= maxLat; lat += 1) {
+    for (let lon = minLon; lon <= maxLon; lon += 1) {
+      tiles.push(tileName(lat, lon));
+    }
+  }
+  return tiles;
+}
+
+function worldcoverTileName(latFloor: number, lonFloor: number) {
+  const latOrigin = Math.floor(latFloor / 3) * 3;
+  const lonOrigin = Math.floor(lonFloor / 3) * 3;
+  return `${tileName(latOrigin, lonOrigin).replace(/([NS]\d{2})([EW]\d{3})/, "ESA_WorldCover_10m_2020_v100_$1$2_Map")}`;
+}
+
+function worldcoverTilesForRadius(latitude: number, longitude: number, radiusKm: number) {
+  const latDelta = radiusKm / 111.0;
+  const lonScale = Math.max(Math.cos((latitude * Math.PI) / 180), 0.1);
+  const lonDelta = radiusKm / (111.0 * lonScale);
+  const minLat = Math.floor(latitude - latDelta);
+  const maxLat = Math.floor(latitude + latDelta);
+  const minLon = Math.floor(longitude - lonDelta);
+  const maxLon = Math.floor(longitude + lonDelta);
+  const tiles = new Set<string>();
+  for (let lat = minLat; lat <= maxLat; lat += 1) {
+    for (let lon = minLon; lon <= maxLon; lon += 1) {
+      tiles.add(worldcoverTileName(lat, lon));
+    }
+  }
+  return [...tiles].sort();
+}
+
+function missingGis(status: SystemStatus | null, request: PlanRequest) {
+  if (!status) return { dem: ["status unknown"], worldcover: ["status unknown"] };
+  const demTiles = new Set(status.dem_tiles);
+  const coverMaps = new Set(status.worldcover_maps);
+  const dem = tilesForRadius(request.latitude, request.longitude, request.radius_km).filter((tile) => !demTiles.has(tile));
+  const worldcover = worldcoverTilesForRadius(request.latitude, request.longitude, request.radius_km).filter((tile) => !coverMaps.has(tile));
+  return { dem, worldcover };
+}
+
+function parseChatPlan(text: string, current: PlanRequest): { nextForm: PlanRequest; changed: string[] } {
+  const nextForm = { ...current };
+  const changed: string[] = [];
+  const normalized = text.replace(/,/g, " ");
+
+  const coordMatch = normalized.match(/(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)/);
+  if (coordMatch) {
+    const lat = Number(coordMatch[1]);
+    const lon = Number(coordMatch[2]);
+    if (Math.abs(lat) <= 90 && Math.abs(lon) <= 180) {
+      nextForm.latitude = lat;
+      nextForm.longitude = lon;
+      changed.push(`tọa độ ${lat}, ${lon}`);
+    }
+  }
+
+  const radiusMatch = text.match(/(?:radius|b[aá]n k[ií]nh|r)\s*[:=]?\s*(\d+(?:\.\d+)?)\s*(?:km)?/i);
+  if (radiusMatch) {
+    nextForm.radius_km = Number(radiusMatch[1]);
+    changed.push(`bán kính ${nextForm.radius_km} km`);
+  }
+
+  const heightMatch = text.match(/(?:tower|height|cao|c[oộ]t)\s*[:=]?\s*(\d+(?:\.\d+)?)\s*(?:m)?/i);
+  if (heightMatch) {
+    nextForm.tower_height_m = Number(heightMatch[1]);
+    changed.push(`cao anten ${nextForm.tower_height_m} m`);
+  }
+
+  const siteMatch = text.match(/(?:site|t[eê]n|name)\s*[:=]?\s*([A-Za-z0-9_-]{3,})/i);
+  if (siteMatch) {
+    nextForm.site_name = siteMatch[1].toUpperCase();
+    changed.push(`site ${nextForm.site_name}`);
+  }
+
+  return { nextForm, changed };
+}
+
+function isPlanIntent(text: string) {
+  return /(plan|planning|quy ho[aạ]ch|ch[aạ]y|scan|t[iì]m|candidate|link)/i.test(text);
+}
+
+function isGisIntent(text: string) {
+  return /(download|t[aả]i).*(gis|dem|worldcover)|gis|dem/i.test(text);
+}
+
+function isStatusIntent(text: string) {
+  return /(status|tr[aạ]ng th[aá]i|refresh|reload|c[aậ]p nh[aậ]t)/i.test(text);
+}
+
+function isHelpIntent(text: string) {
+  return /(help|h[uư][oớ]ng d[aẫ]n|l[eệ]nh|command|\?)/i.test(text);
+}
+
 export default function App() {
   const [form, setForm] = useState<PlanRequest>(initialForm);
   const [result, setResult] = useState<PlanResult | null>(null);
@@ -44,9 +186,19 @@ export default function App() {
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [planning, setPlanning] = useState(false);
+  const [showDetails, setShowDetails] = useState(false);
   const [showExports, setShowExports] = useState(false);
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
   const [calloffRules, setCalloffRules] = useState<CalloffRules | null>(null);
+  const [chatInput, setChatInput] = useState("");
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
+    {
+      id: id(),
+      role: "assistant",
+      text: "Nhập yêu cầu quy hoạch bằng tiếng Việt. Ví dụ: quy hoạch site DN001 tại 16.032, 108.221 bán kính 30km cao 30m."
+    }
+  ]);
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
   const planningAbortRef = useRef<AbortController | null>(null);
 
   const rows = useMemo(() => {
@@ -63,11 +215,22 @@ export default function App() {
   const worldCoverRegionText = systemStatus?.worldcover_regions.length ? systemStatus.worldcover_regions.join(", ") : "-";
   const canExportCalloff = Boolean(selected?.calloff && selected.link.status !== "REJECTED");
 
+  function pushMessage(role: ChatMessage["role"], text: string) {
+    setChatMessages((items) => [...items, { id: id(), role, text }]);
+  }
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [chatMessages, busy]);
+
   async function refreshSystemStatus() {
     try {
-      setSystemStatus(await fetchSystemStatus());
+      const data = await fetchSystemStatus();
+      setSystemStatus(data);
+      return data;
     } catch {
       setSystemStatus(null);
+      return null;
     }
   }
 
@@ -76,7 +239,7 @@ export default function App() {
     fetchCalloffRules().then(setCalloffRules).catch(() => setCalloffRules(null));
   }, []);
 
-  async function refreshWorkspace() {
+  async function refreshWorkspace(announce = true) {
     planningAbortRef.current?.abort();
     setResult(null);
     setSelected(null);
@@ -85,10 +248,15 @@ export default function App() {
     setPlanning(false);
     setBusy(true);
     try {
-      await refreshSystemStatus();
-      setCalloffRules(await fetchCalloffRules());
+      const [status, rules] = await Promise.all([refreshSystemStatus(), fetchCalloffRules()]);
+      setCalloffRules(rules);
+      if (announce) {
+        pushMessage("assistant", `Đã refresh workspace. Sites: ${status?.total_sites ?? 0}, MW links: ${status?.total_mw_links ?? 0}.`);
+      }
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Refresh failed");
+      const text = error instanceof Error ? error.message : "Refresh failed";
+      setMessage(text);
+      pushMessage("assistant", text);
     } finally {
       setBusy(false);
     }
@@ -109,25 +277,42 @@ export default function App() {
     }
   }
 
-  async function runPlan() {
+  async function runPlan(nextForm = form, announce = true) {
     planningAbortRef.current?.abort();
     const controller = new AbortController();
     planningAbortRef.current = controller;
+    setForm(nextForm);
     setBusy(true);
     setPlanning(true);
     setMessage("");
+    if (announce) {
+      pushMessage("system", `Đang kiểm tra GIS cho ${nextForm.site_name} trong bán kính ${nextForm.radius_km} km...`);
+    }
     try {
-      const data = await planSingleLink(form, controller.signal);
+      const gisReady = await ensureGisReady(nextForm);
+      if (!gisReady) return;
+      pushMessage("system", `GIS đã sẵn sàng. Đang quét candidate cho ${nextForm.site_name}...`);
+      const data = await planSingleLink(nextForm, controller.signal);
       setResult(data);
       setSelected(data.best_candidate ?? data.rejected_links[0] ?? null);
       if (data.summary.total_candidates === 0) {
         setMessage("No candidate sites found. Import site CSV or increase radius.");
+        pushMessage("assistant", "Không tìm thấy candidate. Hãy import site CSV hoặc tăng bán kính tìm kiếm.");
+      } else {
+        const best = data.best_candidate ? formatCandidate(data.best_candidate) : "không có link đạt yêu cầu";
+        pushMessage(
+          "assistant",
+          `Hoàn tất: ${data.summary.total_candidates} candidate, ${data.summary.accepted} accepted, ${data.summary.rejected} rejected. Best: ${best}.`
+        );
       }
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
         setMessage("Scan cancelled");
+        pushMessage("assistant", "Đã dừng scan.");
       } else {
-        setMessage(error instanceof Error ? error.message : "Planning failed");
+        const text = displayError(error, "Planning failed");
+        setMessage(text);
+        pushMessage("assistant", text);
       }
     } finally {
       if (planningAbortRef.current === controller) {
@@ -147,10 +332,14 @@ export default function App() {
     setBusy(true);
     try {
       const data = await importSites(file);
-      setMessage(`CSV imported: ${data.inserted} inserted, ${data.updated} updated, ${data.skipped} skipped`);
+      const text = `CSV imported: ${data.inserted} inserted, ${data.updated} updated, ${data.skipped} skipped`;
+      setMessage(text);
+      pushMessage("assistant", text);
       refreshSystemStatus();
     } catch (error) {
-      setMessage(displayError(error, "Import failed"));
+      const text = displayError(error, "Import failed");
+      setMessage(text);
+      pushMessage("assistant", text);
     } finally {
       setBusy(false);
     }
@@ -161,10 +350,14 @@ export default function App() {
     setBusy(true);
     try {
       const data = await importMwLinks(file);
-      setMessage(`MW links imported: ${data.imported}`);
+      const text = `MW links imported: ${data.imported}`;
+      setMessage(text);
+      pushMessage("assistant", text);
       refreshSystemStatus();
     } catch (error) {
-      setMessage(displayError(error, "MW link import failed"));
+      const text = displayError(error, "MW link import failed");
+      setMessage(text);
+      pushMessage("assistant", text);
     } finally {
       setBusy(false);
     }
@@ -173,21 +366,57 @@ export default function App() {
   async function onDownloadGis() {
     setBusy(true);
     setMessage("Downloading GIS tiles...");
+    pushMessage("system", `Đang tải GIS quanh ${form.latitude}, ${form.longitude} bán kính ${form.radius_km} km...`);
     try {
       const data = await downloadGis({
         latitude: form.latitude,
         longitude: form.longitude,
         radius_km: form.radius_km
       });
-      setMessage(
-        `GIS download complete. DEM: ${data.dem.downloaded_tiles.length} downloaded, ${data.dem.existing_tiles.length} existing, ${data.dem.failed_tiles.length} failed; WorldCover: ${data.worldcover.downloaded_tiles.length} downloaded, ${data.worldcover.existing_tiles.length} existing, ${data.worldcover.failed_tiles.length} failed`
-      );
+      const text =
+        `GIS xong. DEM: ${data.dem.downloaded_tiles.length} tải mới, ${data.dem.existing_tiles.length} có sẵn, ${data.dem.failed_tiles.length} lỗi; ` +
+        `WorldCover: ${data.worldcover.downloaded_tiles.length} tải mới, ${data.worldcover.existing_tiles.length} có sẵn, ${data.worldcover.failed_tiles.length} lỗi.`;
+      setMessage(text);
+      pushMessage("assistant", text);
       refreshSystemStatus();
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "GIS download failed");
+      const text = error instanceof Error ? error.message : "GIS download failed";
+      setMessage(text);
+      pushMessage("assistant", text);
     } finally {
       setBusy(false);
     }
+  }
+
+  async function ensureGisReady(nextForm: PlanRequest) {
+    const status = await refreshSystemStatus();
+    const missing = missingGis(status, nextForm);
+    if (missing.dem.length === 0 && missing.worldcover.length === 0) {
+      pushMessage("system", "GIS đã đủ cho khu vực hiện tại.");
+      return true;
+    }
+
+    pushMessage(
+      "system",
+      `Thiếu GIS cho khu vực này. DEM thiếu ${missing.dem.length} tile, WorldCover thiếu ${missing.worldcover.length} tile. Đang tải tự động...`
+    );
+    const data = await downloadGis({
+      latitude: nextForm.latitude,
+      longitude: nextForm.longitude,
+      radius_km: nextForm.radius_km
+    });
+    const failed = data.dem.failed_tiles.length + data.worldcover.failed_tiles.length;
+    const text =
+      `GIS auto-check xong. DEM: ${data.dem.downloaded_tiles.length} tải mới, ${data.dem.existing_tiles.length} có sẵn, ${data.dem.failed_tiles.length} lỗi; ` +
+      `WorldCover: ${data.worldcover.downloaded_tiles.length} tải mới, ${data.worldcover.existing_tiles.length} có sẵn, ${data.worldcover.failed_tiles.length} lỗi.`;
+    setMessage(text);
+    pushMessage(failed ? "assistant" : "system", text);
+    await refreshSystemStatus();
+    if (failed > 0) {
+      pushMessage("assistant", "Một số tile GIS tải lỗi nên chưa chạy planning. Kiểm tra mạng hoặc nguồn GIS rồi chạy lại.");
+      return false;
+    }
+    return true;
   }
 
   function exportJson() {
@@ -284,45 +513,168 @@ export default function App() {
     URL.revokeObjectURL(url);
   }
 
+  async function handleChatSubmit(event: FormEvent) {
+    event.preventDefault();
+    const text = chatInput.trim();
+    if (!text || busy) return;
+    setChatInput("");
+    pushMessage("user", text);
+
+    const { nextForm, changed } = parseChatPlan(text, form);
+    if (changed.length) {
+      setForm(nextForm);
+      pushMessage("assistant", `Đã nhận: ${changed.join(", ")}.`);
+    }
+
+    if (isHelpIntent(text)) {
+      pushMessage("assistant", "Có thể nhập: quy hoạch site DN001 tại 16.032, 108.221 bán kính 30km cao 30m; tải GIS; refresh; hoặc hỏi best link sau khi chạy.");
+      return;
+    }
+
+    if (isStatusIntent(text)) {
+      await refreshWorkspace(true);
+      return;
+    }
+
+    if (isGisIntent(text) && !isPlanIntent(text)) {
+      await onDownloadGis();
+      return;
+    }
+
+    if (isPlanIntent(text) || changed.length > 0) {
+      await runPlan(nextForm, true);
+      return;
+    }
+
+    if (/(best|t[oố]t nh[aấ]t|k[eế]t qu[aả])/i.test(text) && result) {
+      pushMessage("assistant", result.best_candidate ? `Best hiện tại: ${formatCandidate(result.best_candidate)}.` : "Chưa có best candidate đạt yêu cầu.");
+      return;
+    }
+
+    pushMessage("assistant", "Tôi chưa hiểu lệnh này. Gõ help để xem mẫu câu.");
+  }
+
   return (
-    <main className="shell">
-      <aside className="sidebar">
+    <main className="chatShell">
+      <section className="chatPanel">
         <div className="brand">
           <RadioTower size={24} />
           <div>
             <h1>MW Pre-planning Lite</h1>
-            <span>Offline candidate screening</span>
+            <span>Chat-driven candidate screening</span>
           </div>
         </div>
 
-        <label>
-          Site name
-          <input value={form.site_name} onChange={(e) => setForm({ ...form, site_name: e.target.value })} />
-        </label>
-        <div className="grid2">
-          <label>
-            Latitude
-            <input type="number" value={form.latitude} onChange={(e) => setForm({ ...form, latitude: Number(e.target.value) })} />
-          </label>
-          <label>
-            Longitude
-            <input type="number" value={form.longitude} onChange={(e) => setForm({ ...form, longitude: Number(e.target.value) })} />
-          </label>
+        <div className="chatMessages">
+          {chatMessages.map((item) => (
+            <div key={item.id} className={`chatBubble ${item.role}`}>
+              <span className="bubbleIcon">{item.role === "user" ? "You" : item.role === "system" ? "Run" : <Bot size={15} />}</span>
+              <p>{item.text}</p>
+            </div>
+          ))}
+          {busy && (
+            <div className="chatBubble system">
+              <span className="bubbleIcon">Run</span>
+              <p>{planning ? "Planner đang xử lý..." : "Đang xử lý..."}</p>
+            </div>
+          )}
+          <div ref={chatEndRef} />
         </div>
-        <div className="grid2">
-          <label>
-            Tower m
-            <input type="number" value={form.tower_height_m} onChange={(e) => setForm({ ...form, tower_height_m: Number(e.target.value) })} />
-          </label>
-          <label>
-            Radius km
-            <input type="number" value={form.radius_km} onChange={(e) => setForm({ ...form, radius_km: Number(e.target.value) })} />
-          </label>
+
+        <form className="chatComposer" onSubmit={handleChatSubmit}>
+          <input
+            value={chatInput}
+            onChange={(e) => setChatInput(e.target.value)}
+            placeholder="Nhập yêu cầu quy hoạch, ví dụ: plan site DN001 tại 16.032, 108.221 radius 30 cao 30"
+          />
+          <button className="primary iconButton" disabled={busy || !chatInput.trim()} title="Send">
+            <Send size={18} />
+          </button>
+        </form>
+
+        <div className="quickActions">
+          <button onClick={() => runPlan(form)} disabled={busy}>
+            <RadioTower size={18} />
+            Run
+          </button>
+          {planning && (
+            <button className="danger" onClick={cancelPlan}>
+              Stop
+            </button>
+          )}
+          <button onClick={onDownloadGis} disabled={busy}>
+            <MapPinned size={18} />
+            GIS
+          </button>
+          <button onClick={() => refreshWorkspace(true)} disabled={busy}>
+            <RefreshCw size={18} />
+            Refresh
+          </button>
+          <button onClick={() => setShowDetails((value) => !value)}>
+            <SlidersHorizontal size={18} />
+            Params
+          </button>
+          <button className="danger" onClick={exitApp} disabled={busy}>
+            <Power size={18} />
+            Exit
+          </button>
         </div>
-        <label>
-          Band
-          <input value="AUTO" disabled />
-        </label>
+
+        {showDetails && (
+          <div className="paramPanel">
+            <label>
+              Site name
+              <input value={form.site_name} onChange={(e) => setForm({ ...form, site_name: e.target.value })} />
+            </label>
+            <div className="grid2">
+              <label>
+                Latitude
+                <input type="number" value={form.latitude} onChange={(e) => setForm({ ...form, latitude: Number(e.target.value) })} />
+              </label>
+              <label>
+                Longitude
+                <input type="number" value={form.longitude} onChange={(e) => setForm({ ...form, longitude: Number(e.target.value) })} />
+              </label>
+            </div>
+            <div className="grid2">
+              <label>
+                Tower m
+                <input type="number" value={form.tower_height_m} onChange={(e) => setForm({ ...form, tower_height_m: Number(e.target.value) })} />
+              </label>
+              <label>
+                Radius km
+                <input type="number" value={form.radius_km} onChange={(e) => setForm({ ...form, radius_km: Number(e.target.value) })} />
+              </label>
+            </div>
+          </div>
+        )}
+
+        <div className="fileActions">
+          <label className="upload">
+            <Upload size={18} />
+            Site CSV
+            <input type="file" accept=".csv" onChange={(e) => onCsvUpload(e.target.files?.[0])} />
+          </label>
+          <label className="upload">
+            <Upload size={18} />
+            MW links
+            <input type="file" accept=".csv" onChange={(e) => onMwLinksUpload(e.target.files?.[0])} />
+          </label>
+          <button onClick={exportCalloffXlsx} disabled={!canExportCalloff}>
+            <Download size={18} />
+            Calloff
+          </button>
+          <button onClick={() => setShowExports((value) => !value)}>
+            <FileJson size={18} />
+            Raw
+          </button>
+          {showExports && (
+            <>
+              <button onClick={exportJson} disabled={!result}>JSON</button>
+              <button onClick={exportCsv} disabled={!result}>CSV</button>
+            </>
+          )}
+        </div>
 
         {calloffRules && (
           <div className="rulePanel">
@@ -337,65 +689,8 @@ export default function App() {
           </div>
         )}
 
-        <button onClick={onDownloadGis} disabled={busy}>
-          <Download size={18} />
-          Download GIS
-        </button>
-
-        <button onClick={refreshWorkspace} disabled={busy}>
-          <RotateCw size={18} />
-          Refresh
-        </button>
-
-        <button className="danger" onClick={exitApp} disabled={busy}>
-          <Power size={18} />
-          Exit app
-        </button>
-
-        <button className="primary" onClick={runPlan} disabled={busy}>
-          <RadioTower size={18} />
-          {busy ? "Running" : "Run planning"}
-        </button>
-        {planning && (
-          <button className="danger" onClick={cancelPlan}>
-            Stop scan
-          </button>
-        )}
-
-        <label className="upload">
-          <Upload size={18} />
-          Import site CSV
-          <input type="file" accept=".csv" onChange={(e) => onCsvUpload(e.target.files?.[0])} />
-        </label>
-        <label className="upload">
-          <Upload size={18} />
-          Import MW links
-          <input type="file" accept=".csv" onChange={(e) => onMwLinksUpload(e.target.files?.[0])} />
-        </label>
-
-        <button onClick={exportCalloffXlsx} disabled={!canExportCalloff}>
-          <Download size={18} />
-          Export calloff XLS
-        </button>
-        <label className="toggleRow">
-          <input type="checkbox" checked={showExports} onChange={(e) => setShowExports(e.target.checked)} />
-          Show raw exports
-        </label>
-        {showExports && (
-          <>
-            <button onClick={exportJson} disabled={!result}>
-              <Download size={18} />
-              Export JSON
-            </button>
-            <button onClick={exportCsv} disabled={!result}>
-              <Download size={18} />
-              Export CSV
-            </button>
-          </>
-        )}
-
         {message && <p className="message">{message}</p>}
-      </aside>
+      </section>
 
       <section className="workspace">
         <div className="summary">
@@ -411,6 +706,7 @@ export default function App() {
           <div><strong>{result?.summary.elapsed_seconds?.toFixed(2) ?? "-"}</strong><span>Total sec</span></div>
         </div>
         <div className="statusStrip">
+          <span>Input: {form.site_name} | {form.latitude}, {form.longitude} | {form.radius_km} km | {form.tower_height_m} m</span>
           <span>Site status: {statusText}</span>
           <span>DEM regions: {demRegionText}</span>
           <span>Cover regions: {worldCoverRegionText}</span>
