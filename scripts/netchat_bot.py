@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
+import json
 import os
-import re
+import ssl
 import sys
-import time
 from pathlib import Path
 from typing import Any
 
-import httpx
+import aiohttp
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -20,16 +21,18 @@ if str(BACKEND_ROOT) not in sys.path:
 
 os.environ.setdefault("MW_DATABASE_URL", f"sqlite:///{(PROJECT_ROOT / 'data' / 'mwplanner.db').as_posix()}")
 
-from app.database.session import init_db  # noqa: E402
 from app.core.config import get_settings  # noqa: E402
-from scripts.telegram_bot import ensure_gis, format_result, parse_plan  # noqa: E402
+from app.database.session import init_db  # noqa: E402
 from scripts.netchat_send import (  # noqa: E402
+    apply_netchat_config,
+    apply_netchat_env_config,
     build_netchat_auth,
-    login_netchat_cookie,
+    endpoint_from_server_url,
     netchat_base_url,
+    netchat_ssl_verify,
     required_env,
-    send_netchat_message,
 )
+from scripts.telegram_bot import ensure_gis, format_result, parse_plan  # noqa: E402
 
 
 HELP_TEXT = """MW Pre-planning NetChat
@@ -42,127 +45,167 @@ Bot se tu kiem tra GIS. Neu thieu DEM/WorldCover, bot tai GIS truoc roi moi chay
 """
 
 
+def websocket_url(endpoint: str) -> str:
+    base = netchat_base_url(endpoint)
+    if base.startswith("https://"):
+        return f"wss://{base.removeprefix('https://')}/api/v4/websocket"
+    if base.startswith("http://"):
+        return f"ws://{base.removeprefix('http://')}/api/v4/websocket"
+    raise SystemExit(f"Unsupported NetChat base URL: {base}")
+
+
+def aiohttp_ssl_context() -> ssl.SSLContext | bool:
+    if netchat_ssl_verify():
+        return True
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    return context
+
+
 class NetChatBot:
-    def __init__(self, endpoint: str, token: str, channel_id: str) -> None:
+    def __init__(self, endpoint: str, token: str) -> None:
         self.endpoint = endpoint
         self.base_url = netchat_base_url(endpoint)
+        self.ws_url = websocket_url(endpoint)
         self.token = token
-        self.channel_id = channel_id
-        self.poll_seconds = float(os.environ.get("NETCHAT_POLL_SECONDS", "4"))
-        self.skip_existing = os.environ.get("NETCHAT_SKIP_EXISTING", "1") != "0"
-        self.last_create_at = 0
-        self.seen_post_ids: set[str] = set()
+        self.reply_in_thread = os.environ.get("NETCHAT_REPLY_IN_THREAD", "true").lower() in {"1", "true", "yes", "on"}
+        self.reconnect_seconds = float(os.environ.get("NETCHAT_RECONNECT_SECONDS", "5"))
         self.bot_user_id = os.environ.get("NETCHAT_BOT_USER_ID", "")
-        self.client = httpx.AsyncClient(timeout=60)
-
-    async def close(self) -> None:
-        await self.client.aclose()
+        self.ssl_context = aiohttp_ssl_context()
+        self.seq = 1
 
     def auth(self) -> tuple[dict[str, str], dict[str, str]]:
         return build_netchat_auth(self.token, self.endpoint)
 
-    async def get_posts(self) -> list[dict[str, Any]]:
+    async def get_bot_user_id(self, session: aiohttp.ClientSession) -> str:
         headers, cookies = self.auth()
-        url = f"{self.base_url}/api/v4/channels/{self.channel_id}/posts"
-        response = await self.client.get(url, headers=headers, cookies=cookies, params={"page": 0, "per_page": 30})
-        if response.is_error:
-            detail = response.text.strip()
-            raise RuntimeError(
-                f"NetChat read returned {response.status_code} {response.reason_phrase}. "
-                f"Response: {detail or '<empty response>'}"
-            )
-        data = response.json()
-        order = data.get("order", [])
-        posts = data.get("posts", {})
-        result = [posts[post_id] for post_id in reversed(order) if post_id in posts]
-        return result
+        async with session.get(f"{self.base_url}/api/v4/users/me", headers=headers, cookies=cookies, ssl=self.ssl_context) as response:
+            text = await response.text()
+            if response.status >= 400:
+                raise RuntimeError(f"GET /users/me failed {response.status}: {text}")
+            data = json.loads(text)
+            return data["id"]
 
-    async def send(self, text: str) -> None:
+    async def send_reply(self, session: aiohttp.ClientSession, channel_id: str, message: str, root_id: str | None = None) -> None:
+        headers, cookies = self.auth()
+        payload: dict[str, Any] = {
+            "channel_id": channel_id,
+            "message": message,
+        }
+        if root_id and self.reply_in_thread:
+            payload["root_id"] = root_id
+
+        async with session.post(f"{self.base_url}/api/v4/posts", headers=headers, cookies=cookies, json=payload, ssl=self.ssl_context) as response:
+            text = await response.text()
+            if response.status >= 400:
+                raise RuntimeError(f"POST /posts failed {response.status}: {text}")
+
+    async def send_chunks(self, session: aiohttp.ClientSession, channel_id: str, text: str, root_id: str | None = None) -> None:
         chunks = [text[index : index + 3900] for index in range(0, len(text), 3900)] or [""]
         for chunk in chunks:
-            await send_netchat_message(self.endpoint, self.token, self.channel_id, chunk)
+            await self.send_reply(session, channel_id, chunk, root_id=root_id)
 
-    async def handle_post(self, post: dict[str, Any]) -> None:
-        post_id = str(post.get("id", ""))
-        if not post_id or post_id in self.seen_post_ids:
-            return
-        self.seen_post_ids.add(post_id)
-
-        create_at = int(post.get("create_at") or 0)
-        self.last_create_at = max(self.last_create_at, create_at)
-
-        if self.bot_user_id and post.get("user_id") == self.bot_user_id:
-            return
-        text = (post.get("message") or "").strip()
-        if not text:
+    async def handle_post(self, session: aiohttp.ClientSession, event: dict[str, Any], bot_user_id: str) -> None:
+        data = event.get("data", {})
+        post_raw = data.get("post")
+        if not post_raw:
             return
 
-        if text in {"/help", "help"}:
-            await self.send(HELP_TEXT)
+        post = json.loads(post_raw)
+        post_id = post.get("id")
+        user_id = post.get("user_id")
+        channel_id = post.get("channel_id")
+        root_id = post.get("root_id") or post_id
+        message = (post.get("message") or "").strip()
+
+        if user_id == bot_user_id or (self.bot_user_id and user_id == self.bot_user_id):
             return
-        if text == "/status":
+        if not message:
+            return
+
+        print(f"NetChat message from {user_id} in {channel_id}: {message}", flush=True)
+
+        if message in {"/help", "help"}:
+            await self.send_chunks(session, channel_id, HELP_TEXT, root_id=root_id)
+            return
+        if message == "/status":
             settings = get_settings()
-            await self.send(
-                f"DB: {os.environ['MW_DATABASE_URL']}\nDEM: {settings.dem_directory}\nWorldCover: {settings.worldcover_directory}"
+            await self.send_chunks(
+                session,
+                channel_id,
+                f"DB: {os.environ['MW_DATABASE_URL']}\nDEM: {settings.dem_directory}\nWorldCover: {settings.worldcover_directory}",
+                root_id=root_id,
             )
             return
-        if text.startswith("/plan") or re.search(r"(quy hoach|quy hoạch|plan|site)", text, re.IGNORECASE):
-            request = parse_plan(text)
+        if message.startswith("/plan") or "plan" in message.lower() or "site" in message.lower() or "quy hoạch" in message.lower():
+            request = parse_plan(message)
             if request is None:
-                await self.send("Sai cu phap. Vi du: /plan site DN001 16.032 108.221 radius 30 height 30")
+                await self.send_chunks(session, channel_id, "Sai cu phap. Vi du: /plan site DN001 16.032 108.221 radius 30 height 30", root_id=root_id)
                 return
-            await self.send(f"Checking GIS for {request.site_name}...")
+            await self.send_chunks(session, channel_id, f"Checking GIS for {request.site_name}...", root_id=root_id)
             try:
                 gis_message = await asyncio.to_thread(ensure_gis, request)
-                await self.send(gis_message)
-                await self.send("Running planner...")
+                await self.send_chunks(session, channel_id, gis_message, root_id=root_id)
+                await self.send_chunks(session, channel_id, "Running planner...", root_id=root_id)
                 result_message = await asyncio.to_thread(format_result, request)
-                await self.send(result_message)
+                await self.send_chunks(session, channel_id, result_message, root_id=root_id)
             except Exception as exc:
-                await self.send(f"Failed: {exc}")
+                await self.send_chunks(session, channel_id, f"Failed: {exc}", root_id=root_id)
 
-    async def initialize_cursor(self) -> None:
-        posts = await self.get_posts()
-        if not posts:
-            return
-        if self.skip_existing:
-            self.last_create_at = max(int(post.get("create_at") or 0) for post in posts)
-            self.seen_post_ids.update(str(post.get("id", "")) for post in posts if post.get("id"))
-            print(f"Skipped {len(posts)} existing NetChat posts.", flush=True)
-
-    async def run(self) -> None:
-        await self.initialize_cursor()
-        print("NetChat polling bot is running.", flush=True)
+    async def websocket_loop(self, session: aiohttp.ClientSession, bot_user_id: str) -> None:
+        headers, _ = self.auth()
         while True:
             try:
-                posts = await self.get_posts()
-                for post in posts:
-                    create_at = int(post.get("create_at") or 0)
-                    if create_at < self.last_create_at:
-                        continue
-                    await self.handle_post(post)
-            except httpx.HTTPError as exc:
-                print(f"NetChat network error: {exc}", flush=True)
+                print(f"Connecting NetChat WebSocket: {self.ws_url}", flush=True)
+                async with session.ws_connect(self.ws_url, headers=headers, ssl=self.ssl_context) as ws:
+                    await ws.send_json(
+                        {
+                            "seq": self.seq,
+                            "action": "authentication_challenge",
+                            "data": {"token": self.token},
+                        }
+                    )
+                    self.seq += 1
+                    print("NetChat WebSocket connected.", flush=True)
+
+                    async for message in ws:
+                        if message.type == aiohttp.WSMsgType.TEXT:
+                            event = json.loads(message.data)
+                            if event.get("event") == "posted":
+                                await self.handle_post(session, event, bot_user_id)
+                        elif message.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR}:
+                            print("NetChat WebSocket closed/error. Reconnecting.", flush=True)
+                            break
             except Exception as exc:
-                print(f"NetChat bot error: {exc}", flush=True)
-            await asyncio.sleep(self.poll_seconds)
+                print(f"NetChat WebSocket error: {exc}", flush=True)
+                await asyncio.sleep(self.reconnect_seconds)
+
+    async def run(self) -> None:
+        async with aiohttp.ClientSession() as session:
+            bot_user_id = await self.get_bot_user_id(session)
+            print("NetChat bot is running.", flush=True)
+            print(f"bot_user_id = {bot_user_id}", flush=True)
+            await self.websocket_loop(session, bot_user_id)
 
 
 async def main() -> None:
+    parser = argparse.ArgumentParser(description="Run MW Pre-planning NetChat WebSocket bot.")
+    parser.add_argument("--config", help="Read NetChat settings from a config JSON with a netchat block.")
+    args = parser.parse_args()
+
+    apply_netchat_config(args.config)
+    apply_netchat_env_config()
+    if not os.environ.get("NETCHAT_API_ENDPOINT") and not os.environ.get("NETCHAT_SERVER_URL"):
+        os.environ["NETCHAT_API_ENDPOINT"] = endpoint_from_server_url("https://bot-netchat.viettel.vn")
+
     endpoint = required_env("NETCHAT_API_ENDPOINT")
-    channel_id = required_env("NETCHAT_CHANNEL_ID")
-    token = os.environ.get("NETCHAT_API_TOKEN", "")
-    if not token and os.environ.get("NETCHAT_AUTH_MODE", "bearer").lower() == "cookie":
-        token = await login_netchat_cookie(endpoint)
+    token = os.environ.get("NETCHAT_API_TOKEN") or os.environ.get("NETCHAT_TOKEN")
     if not token:
-        raise SystemExit("Set NETCHAT_API_TOKEN, or set cookie auto-login env vars.")
+        raise SystemExit("Set NETCHAT_TOKEN or NETCHAT_API_TOKEN.")
 
     init_db()
-    bot = NetChatBot(endpoint, token, channel_id)
-    try:
-        await bot.run()
-    finally:
-        await bot.close()
+    await NetChatBot(endpoint, token).run()
 
 
 if __name__ == "__main__":

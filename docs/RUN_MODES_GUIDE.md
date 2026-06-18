@@ -1,38 +1,106 @@
 # Huong Dan Chay MW Pre-planning Lite
 
-Tai lieu nay tom tat 3 cach chay hien co:
+Tai lieu nay tom tat cac cach chay hien co:
 
-1. Dung chat Telegram.
-2. Gui ket qua qua NetChat.
+1. Chay qua chat: Telegram, NetChat, hoac ca hai song song.
+2. Gui ket qua qua NetChat mot lan.
 3. Chay web local.
 4. Build file EXE.
 
-## 1. Dung Chat Telegram
+## 1. Chay Qua Chat
 
-Can co:
+Muc nay dung khi chi can bot chat, khong can frontend web.
 
-- Telegram bot token tao tu BotFather.
-- Database local SQLite hoac data site da import.
-- Internet neu can tu dong tai GIS.
-- Cai dependency bang `requirements-chat.txt`, khong dung `requirements.txt` neu chi chay bot tren VPS.
+Ho tro:
 
-Cai dependency:
+- Telegram bot: `scripts/telegram_bot.py`
+- NetChat bot realtime WebSocket: `scripts/netchat_bot.py`
+- Gui NetChat mot lan/test quyen: `scripts/netchat_send.py`
+
+### 1.1 Can Copy Len May Chay Bot
+
+Copy cac file/thu muc bat buoc:
+
+```text
+backend/
+config/
+data/
+scripts/
+requirements-chat.txt
+```
+
+Trong `scripts/`, can co toi thieu:
+
+```text
+scripts/telegram_bot.py
+scripts/netchat_bot.py
+scripts/netchat_send.py
+```
+
+Trong `data/`, nen copy:
+
+```text
+data/mwplanner.db
+data/dem/
+data/worldcover/
+data/mw_links/
+data/sites/
+```
+
+Ghi chu:
+
+- `data/mwplanner.db` la SQLite DB local. Neu khong copy file nay, bot se tao DB moi va ban phai import site lai.
+- `data/dem/` va `data/worldcover/` co the bo trong neu may bot co internet de auto download GIS.
+- Neu chay offline/noi bo, nen copy san `data/dem/` va `data/worldcover/`.
+
+Khong can copy neu chi chay chat:
+
+```text
+frontend/
+.nodejs/
+build/
+dist/
+packaging/
+docker/
+.venv/
+node_modules/
+```
+
+Co the copy them de tham khao, nhung khong bat buoc:
+
+```text
+README.md
+docs/
+.env.example
+```
+
+### 1.2 Cai Dependency Chat
+
+Tao/cai venv tren may chay bot:
 
 ```powershell
 cd D:\MWpre_planning_standalone_59c8a8a
+python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-chat.txt
 ```
 
-Chay bot:
+Neu da co `.venv`:
 
 ```powershell
-cd D:\MWpre_planning_standalone_59c8a8a
-$env:MW_TELEGRAM_BOT_TOKEN = "<telegram bot token>"
-$env:MW_DATABASE_URL = "sqlite:///D:/MWpre_planning_standalone_59c8a8a/data/mwplanner.db"
-.\.venv\Scripts\python.exe .\scripts\telegram_bot.py
+.\.venv\Scripts\python.exe -m pip install -r requirements-chat.txt
 ```
 
-Lenh mau trong Telegram:
+Khong dung full `requirements.txt` neu chi chay chat tren VPS/may bot, vi file full co PyInstaller va cac dependency build khong can thiet.
+
+### 1.3 Bien Moi Truong Chung
+
+Set database:
+
+```powershell
+$env:MW_DATABASE_URL = "sqlite:///D:/MWpre_planning_standalone_59c8a8a/data/mwplanner.db"
+```
+
+Lenh chat mau dung cho ca Telegram va NetChat:
 
 ```text
 /plan site DN001 16.032 108.221 radius 30 height 30
@@ -45,86 +113,113 @@ Bot se:
 - Sau khi GIS san sang, chay planning.
 - Tra ve best link va top candidates.
 
-## 2. Gui Ket Qua Qua NetChat
+### 1.4 Chay Telegram Bot
 
-Thong tin NetChat hien co:
+Can co:
 
-```text
-NETCHAT_API_ENDPOINT=https://netchat.viettel.vn/api/v4/posts
-NETCHAT_CHANNEL_ID=xcq93473uin5ube9iyxhoeptza
-NETCHAT_BOT_ID=rfm7pcsrdfgk7quzuyk7cbj7ze
-```
+- Telegram bot token tao tu BotFather.
+- Database local SQLite hoac data site da import.
+- Internet neu can tu dong tai GIS.
 
-Can co them token NetChat va set bien moi truong:
+Chay bot:
 
 ```powershell
 cd D:\MWpre_planning_standalone_59c8a8a
-$env:NETCHAT_API_ENDPOINT = "https://netchat.viettel.vn/api/v4/posts"
+$env:MW_TELEGRAM_BOT_TOKEN = "<telegram bot token>"
+$env:MW_DATABASE_URL = "sqlite:///D:/MWpre_planning_standalone_59c8a8a/data/mwplanner.db"
+.\.venv\Scripts\python.exe .\scripts\telegram_bot.py
+```
+
+### 1.5 Chay NetChat Bot Realtime
+
+NetChat bot hien dung WebSocket theo mau `testNetChat.py`, khong polling REST nua.
+
+```powershell
+cd D:\MWpre_planning_standalone_59c8a8a
+$env:NETCHAT_SERVER_URL = "https://bot-netchat.viettel.vn"
+$env:NETCHAT_TOKEN = "<TOKEN_CUA_BAN>"
+$env:NETCHAT_SSL_VERIFY = "false"
 $env:NETCHAT_AUTH_MODE = "bearer"
-$env:NETCHAT_API_TOKEN = "<TOKEN_CUA_BAN>"
-$env:NETCHAT_CHANNEL_ID = "xcq93473uin5ube9iyxhoeptza"
-$env:NETCHAT_BOT_ID = "rfm7pcsrdfgk7quzuyk7cbj7ze"
+$env:MW_DATABASE_URL = "sqlite:///D:/MWpre_planning_standalone_59c8a8a/data/mwplanner.db"
+.\.venv\Scripts\python.exe .\scripts\netchat_bot.py
+```
+
+Script se:
+
+- Lay thong tin bot bang:
+
+```text
+GET https://bot-netchat.viettel.vn/api/v4/users/me
+```
+
+- Nghe tin realtime qua:
+
+```text
+wss://bot-netchat.viettel.vn/api/v4/websocket
+```
+
+- Tra loi qua:
+
+```text
+POST https://bot-netchat.viettel.vn/api/v4/posts
+```
+
+Sau khi bot chay, nhan trong NetChat:
+
+```text
+/plan site DN001 16.032 108.221 radius 30 height 30
+```
+
+### 1.6 Chay Telegram Va NetChat Song Song
+
+Mo 2 terminal rieng.
+
+Terminal 1:
+
+```powershell
+cd D:\MWpre_planning_standalone_59c8a8a
+$env:MW_TELEGRAM_BOT_TOKEN = "<telegram bot token>"
+$env:MW_DATABASE_URL = "sqlite:///D:/MWpre_planning_standalone_59c8a8a/data/mwplanner.db"
+.\.venv\Scripts\python.exe .\scripts\telegram_bot.py
+```
+
+Terminal 2:
+
+```powershell
+cd D:\MWpre_planning_standalone_59c8a8a
+$env:NETCHAT_SERVER_URL = "https://bot-netchat.viettel.vn"
+$env:NETCHAT_TOKEN = "<netchat bot token>"
+$env:NETCHAT_SSL_VERIFY = "false"
+$env:NETCHAT_AUTH_MODE = "bearer"
+$env:MW_DATABASE_URL = "sqlite:///D:/MWpre_planning_standalone_59c8a8a/data/mwplanner.db"
+.\.venv\Scripts\python.exe .\scripts\netchat_bot.py
+```
+
+Luu y:
+
+- Ca hai bot dung chung SQLite DB.
+- Neu ca hai cung chay planning nang va cung tai GIS, co the cham. Nen chuan bi GIS truoc hoac tranh chay nhieu lenh nang cung luc.
+
+## 2. Gui Ket Qua Qua NetChat Mot Lan / Test NetChat
+
+Dung script nay de test token hoac gui mot message/ket qua planning, khong chay bot realtime.
+
+Set env:
+
+```powershell
+cd D:\MWpre_planning_standalone_59c8a8a
+$env:NETCHAT_SERVER_URL = "https://bot-netchat.viettel.vn"
+$env:NETCHAT_TOKEN = "<TOKEN_CUA_BAN>"
+$env:NETCHAT_SSL_VERIFY = "false"
+$env:NETCHAT_AUTH_MODE = "bearer"
 $env:MW_DATABASE_URL = "sqlite:///D:/MWpre_planning_standalone_59c8a8a/data/mwplanner.db"
 ```
 
-Script se thu gui them header:
-
-```text
-X-Bot-Id: rfm7pcsrdfgk7quzuyk7cbj7ze
-```
-
-Neu NetChat bao loi `API bot phai duoc goi qua BMS kem header xac minh hop le`, can xin admin BMS ten header va gia tri xac minh, roi set them:
+Kiem tra auth:
 
 ```powershell
-$env:NETCHAT_BMS_HEADER_NAME = "<TEN_HEADER_BMS>"
-$env:NETCHAT_BMS_HEADER_VALUE = "<GIA_TRI_HEADER_BMS>"
+.\.venv\Scripts\python.exe .\scripts\netchat_send.py --check-auth
 ```
-
-Neu BMS yeu cau nhieu header, co the dung JSON:
-
-```powershell
-$env:NETCHAT_EXTRA_HEADERS_JSON = '{"X-BMS-Client":"...","X-BMS-Signature":"..."}'
-```
-
-Neu API Bearer bi chan boi BMS nhung ban co cookie session dang nhap NetChat nhu code mau `MMAUTHTOKEN`, co the chay cookie mode:
-
-```powershell
-$env:NETCHAT_API_ENDPOINT = "https://netchat.viettel.vn/api/v4/posts"
-$env:NETCHAT_AUTH_MODE = "cookie"
-$env:NETCHAT_API_TOKEN = "<GIA_TRI_COOKIE_MMAUTHTOKEN>"
-$env:NETCHAT_CHANNEL_ID = "xcq93473uin5ube9iyxhoeptza"
-```
-
-De ben hon, khong copy cookie thu cong, co the de script tu login lay cookie:
-
-```powershell
-$env:NETCHAT_API_ENDPOINT = "https://netchat.viettel.vn/api/v4/posts"
-$env:NETCHAT_AUTH_MODE = "cookie"
-$env:NETCHAT_LOGIN_ID = "<TAI_KHOAN_NETCHAT>"
-$env:NETCHAT_PASSWORD = "<MAT_KHAU_NETCHAT>"
-$env:NETCHAT_CHANNEL_ID = "xcq93473uin5ube9iyxhoeptza"
-```
-
-Khi `NETCHAT_AUTH_MODE=cookie` va khong set `NETCHAT_API_TOKEN`, script se goi:
-
-```text
-POST https://netchat.viettel.vn/api/v4/users/login
-```
-
-roi lay `MMAUTHTOKEN` tu response cookie hoac `Token` tu response header.
-
-Luu y: cach auto-login chi hoat dong neu NetChat cho phep login bang API username/password. Neu NetChat dung SSO, captcha, OTP hoac BMS rieng thi can API credential chinh thuc tu admin.
-
-Trong cookie mode, script gui request voi browser-like headers va cookie:
-
-```text
-Cookie: MMAUTHTOKEN=<GIA_TRI_COOKIE_MMAUTHTOKEN>
-X-Requested-With: XMLHttpRequest
-Origin: https://netchat.viettel.vn
-Referer: https://netchat.viettel.vn/
-```
-
-Khong commit hoac chia se gia tri `MMAUTHTOKEN`; day la session dang nhap.
 
 Gui tin nhan test:
 
@@ -138,37 +233,17 @@ Chay planning va gui ket qua vao NetChat:
 .\.venv\Scripts\python.exe .\scripts\netchat_send.py --plan "/plan site DN001 16.032 108.221 radius 30 height 30"
 ```
 
-Chay NetChat bot hai chieu bang polling channel:
+Neu can test cookie session browser, van co the dung cookie mode, nhung day chi la cach tam thoi:
 
 ```powershell
-$env:NETCHAT_POLL_SECONDS = "4"
-$env:NETCHAT_SKIP_EXISTING = "1"
-.\.venv\Scripts\python.exe .\scripts\netchat_bot.py
+$env:NETCHAT_SERVER_URL = "https://netchat.viettel.vn"
+$env:NETCHAT_AUTH_MODE = "cookie"
+$env:NETCHAT_TOKEN = "<GIA_TRI_COOKIE_MMAUTHTOKEN>"
+$env:NETCHAT_MMUSERID = "<GIA_TRI_COOKIE_MMUSERID>"
+$env:NETCHAT_MMCSRF = "<GIA_TRI_COOKIE_MMCSRF>"
 ```
 
-Sau khi bot chay, nhan trong NetChat channel:
-
-```text
-/plan site DN001 16.032 108.221 radius 30 height 30
-```
-
-Bot se doc tin moi bang:
-
-```text
-GET /api/v4/channels/{channel_id}/posts
-```
-
-va tra loi bang:
-
-```text
-POST /api/v4/posts
-```
-
-Ghi chu:
-
-- `scripts/netchat_send.py` gui message mot lan.
-- `scripts/netchat_bot.py` chay polling lien tuc de doc lenh moi trong channel.
-- Neu bot tu doc lai message cua chinh no va lap vo han, set `NETCHAT_BOT_USER_ID` bang user id cua bot.
+Khong commit hoac chia se token/cookie.
 
 ## 3. Chay Web Local
 

@@ -214,7 +214,7 @@ NetChat send-message information provided:
 
 ```text
 NETCHAT_BOT_ID=rfm7pcsrdfgk7quzuyk7cbj7ze
-NETCHAT_API_ENDPOINT=https://netchat.viettel.vn/api/v4/posts
+NETCHAT_SERVER_URL=https://bot-netchat.viettel.vn
 NETCHAT_CHANNEL_ID=xcq93473uin5ube9iyxhoeptza
 Authorization: Bearer <TOKEN>
 Content-Type: application/json
@@ -237,16 +237,16 @@ Implemented file:
 Supported:
 - Send plain text to NetChat.
 - Run a planning command and send the result to NetChat.
-- Poll NetChat channel with `GET /api/v4/channels/{channel_id}/posts`.
+- Run NetChat realtime bot with `wss://bot-netchat.viettel.vn/api/v4/websocket`.
 - Handle `/plan`, `/help`, and `/status` from NetChat messages.
 - Reply using `POST /api/v4/posts`.
 
 Example:
 
 ```powershell
-$env:NETCHAT_API_ENDPOINT = "https://netchat.viettel.vn/api/v4/posts"
+$env:NETCHAT_SERVER_URL = "https://bot-netchat.viettel.vn"
 $env:NETCHAT_AUTH_MODE = "bearer"
-$env:NETCHAT_API_TOKEN = "<TOKEN>"
+$env:NETCHAT_TOKEN = "<TOKEN>"
 $env:NETCHAT_CHANNEL_ID = "xcq93473uin5ube9iyxhoeptza"
 $env:NETCHAT_BOT_ID = "rfm7pcsrdfgk7quzuyk7cbj7ze"
 $env:NETCHAT_BMS_HEADER_NAME = "<TEN_HEADER_BMS>"
@@ -255,10 +255,12 @@ $env:MW_DATABASE_URL = "sqlite:///D:/MWpre_planning_standalone_59c8a8a/data/mwpl
 .\.venv\Scripts\python.exe .\scripts\netchat_send.py --plan "/plan site DN001 16.032 108.221 radius 30 height 30"
 ```
 
-Still missing for full NetChat bot behavior:
-- Webhook support is still unknown, but polling channel posts is implemented.
-- If bot repeats its own replies, set `NETCHAT_BOT_USER_ID`.
-- BMS/service account auth may still be needed for durable production instead of copied `MMAUTHTOKEN`.
+Current NetChat bot direction:
+- Use bot token against `bot-netchat.viettel.vn`.
+- Authenticate WebSocket with `authentication_challenge`.
+- Listen for `posted` events.
+- Reply with `POST /api/v4/posts`.
+- BMS blocks direct REST read polling, but WebSocket path is confirmed by `testNetChat.py`.
 
 Observed NetChat API error:
 
@@ -295,18 +297,18 @@ headers = {
 `scripts/netchat_send.py` now supports this through:
 
 ```powershell
-$env:NETCHAT_API_ENDPOINT = "https://netchat.viettel.vn/api/v4/posts"
+$env:NETCHAT_SERVER_URL = "https://bot-netchat.viettel.vn"
 $env:NETCHAT_AUTH_MODE = "cookie"
-$env:NETCHAT_API_TOKEN = "<MMAUTHTOKEN>"
+$env:NETCHAT_TOKEN = "<MMAUTHTOKEN>"
 $env:NETCHAT_CHANNEL_ID = "xcq93473uin5ube9iyxhoeptza"
 ```
 
-In cookie mode, `NETCHAT_API_TOKEN` is treated as the `MMAUTHTOKEN` cookie value. Do not commit or share this value.
+In cookie mode, `NETCHAT_TOKEN` or legacy `NETCHAT_API_TOKEN` is treated as the `MMAUTHTOKEN` cookie value. Do not commit or share this value.
 
 To avoid manually copying `MMAUTHTOKEN`, `scripts/netchat_send.py` also supports auto-login:
 
 ```powershell
-$env:NETCHAT_API_ENDPOINT = "https://netchat.viettel.vn/api/v4/posts"
+$env:NETCHAT_SERVER_URL = "https://bot-netchat.viettel.vn"
 $env:NETCHAT_AUTH_MODE = "cookie"
 $env:NETCHAT_LOGIN_ID = "<NETCHAT_USERNAME>"
 $env:NETCHAT_PASSWORD = "<NETCHAT_PASSWORD>"
@@ -316,7 +318,7 @@ $env:NETCHAT_CHANNEL_ID = "xcq93473uin5ube9iyxhoeptza"
 If `NETCHAT_AUTH_MODE=cookie` and `NETCHAT_API_TOKEN` is empty, the script calls:
 
 ```text
-POST https://netchat.viettel.vn/api/v4/users/login
+POST https://bot-netchat.viettel.vn/api/v4/users/login
 ```
 
 It then uses `MMAUTHTOKEN` from response cookies, or `Token` from response headers as fallback. This only works if NetChat allows username/password API login. If NetChat uses SSO, captcha, OTP, or BMS-only app credentials, ask NetChat admin for an official machine credential flow.
