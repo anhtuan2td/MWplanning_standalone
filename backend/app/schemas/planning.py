@@ -47,6 +47,9 @@ class LinkCheckRequest(BaseModel):
     b: Endpoint
     band: str = "18GHz"
     step_m: float | None = None
+    rain_zone: str | None = None
+    antenna_diameter_m: float = Field(default=0.6, gt=0)
+    equipment_profile: str | None = None
 
 
 class LinkCheckResult(BaseModel):
@@ -61,6 +64,17 @@ class LinkCheckResult(BaseModel):
     status: str
     risk_flags: list[str] = Field(default_factory=list)
     terrain_profile: TerrainProfile
+    availability_percent: float = 100
+    rain_zone: str = "N"
+    fade_margin_db: float = 0
+    equipment_profile: str = "SCREENING_FALLBACK"
+
+
+class AcceptedFilters(BaseModel):
+    reject_site_code_contains: str | None = None
+    min_site_code_number: int | None = None
+    reject_overload: bool = False
+    reject_overlink: bool = False
 
 
 class CalloffInfo(BaseModel):
@@ -89,7 +103,45 @@ class SingleLinkPlanRequest(BaseModel):
     longitude: float
     tower_height_m: float = 30
     radius_km: float | None = None
+    min_radius_km: float | None = None
     band: str = "AUTO"
+    rain_zone: str | None = None
+    antenna_diameter_m: float | None = Field(default=None, gt=0)
+    equipment_profile: str | None = None
+    accepted_filters: AcceptedFilters | None = None
+
+
+class BatchPlanRequest(BaseModel):
+    sites: list[SingleLinkPlanRequest] = Field(min_length=1, max_length=500)
+    top_n: int = Field(default=3, ge=1, le=20)
+
+
+class BatchCandidate(BaseModel):
+    rank: int
+    site_code: str
+    distance_km: float
+    band: str
+    score: float
+    status: str
+    availability_percent: float
+    rain_zone: str
+    fade_margin_db: float
+    equipment_profile: str
+    risk_flags: list[str]
+    calloff: CalloffInfo | None = None
+
+
+class BatchSiteResult(BaseModel):
+    site_name: str
+    candidates: list[BatchCandidate]
+    error: str | None = None
+    gis_status: str | None = None
+    missing_dem_tiles: list[str] = Field(default_factory=list)
+    missing_worldcover_tiles: list[str] = Field(default_factory=list)
+
+
+class BatchPlanResult(BaseModel):
+    results: list[BatchSiteResult]
 
 
 class CandidateLink(BaseModel):

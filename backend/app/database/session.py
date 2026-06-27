@@ -37,6 +37,10 @@ def _ensure_site_columns() -> None:
         statements.append("ALTER TABLE sites ADD COLUMN overload INTEGER DEFAULT 0")
     if "diverse_routing" not in columns:
         statements.append("ALTER TABLE sites ADD COLUMN diverse_routing BOOLEAN DEFAULT FALSE")
+    if "cells_4g" not in columns:
+        statements.append("ALTER TABLE sites ADD COLUMN cells_4g INTEGER")
+    if "cells_5g" not in columns:
+        statements.append("ALTER TABLE sites ADD COLUMN cells_5g INTEGER")
     should_migrate_overload = "overload" in columns and engine.dialect.name == "postgresql"
     if not statements and not should_migrate_overload:
         return

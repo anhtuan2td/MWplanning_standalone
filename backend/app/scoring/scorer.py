@@ -1,4 +1,5 @@
 from app.core.config import get_band_config, get_planner_config
+from app.rf.availability import availability_score
 
 
 def score_link(
@@ -9,6 +10,7 @@ def score_link(
     distance_km: float,
     band: str,
     tower_margin_m: float,
+    availability_percent: float = 100.0,
     diverse_routing: bool = False,
 ) -> tuple[float, str, list[str]]:
     config = get_planner_config()
@@ -19,6 +21,7 @@ def score_link(
     distance_weight = float(weights.get("distance_weight", 15))
     tower_weight = float(weights.get("tower_margin_weight", 15))
     diverse_bonus = float(weights.get("diverse_routing_bonus", 8))
+    availability_weight = float(weights.get("availability_weight", 0))
     max_distance = float(band_config.get("max_distance_km", 999))
 
     flags: list[str] = []
@@ -52,7 +55,12 @@ def score_link(
     distance_score = distance_weight * max(0.0, 1 - max(0.0, distance_ratio - 0.6) / 0.4)
     tower_score = tower_weight * min(1.0, max(0.0, tower_margin_m / 10))
 
-    score = los_score + fresnel_score + distance_score + tower_score
+    availability_config = config.get("availability", {})
+    target = float(availability_config.get("target_percent", 99.99))
+    warning = float(availability_config.get("warning_percent", 99.95))
+    score = los_score + fresnel_score + distance_score + tower_score + availability_score(availability_percent, availability_weight, target)
+    if availability_percent < warning:
+        flags.append("LOW_AVAILABILITY")
     if diverse_routing and not rejected:
         score += diverse_bonus
         flags.append("DIVERSE_ROUTING_BONUS")

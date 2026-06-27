@@ -20,6 +20,8 @@ CSV_ALIASES = {
     "available_height_m": ["available_height_m", "available_height", "available_m"],
     "overload": ["overload", "is_overload", "overloaded"],
     "diverse_routing": ["vh", "diverse_routing", "diverse", "diverse_route"],
+    "cells_4g": ["cells_4g", "cell_4g", "4g_cells", "so_cell_4g"],
+    "cells_5g": ["cells_5g", "cell_5g", "5g_cells", "so_cell_5g"],
     "status": ["status"],
 }
 
@@ -64,6 +66,11 @@ def _int_flag(row: dict[str, str], field: str, default: int = 0) -> int:
         return 1 if value in {"true", "yes", "y", "x", "overload"} else default
 
 
+def _optional_int(row: dict[str, str], field: str) -> int | None:
+    value = _value(row, field, "")
+    return int(float(value)) if value != "" else None
+
+
 def import_sites_csv(db: Session, content: bytes) -> ImportResult:
     decoded = _decode_csv(content)
     reader = csv.DictReader(StringIO(decoded))
@@ -96,6 +103,8 @@ def import_sites_csv(db: Session, content: bytes) -> ImportResult:
             site.available_height_m = _float(row, "available_height_m", site.tower_height_m)
             site.overload = _int_flag(row, "overload", 0)
             site.diverse_routing = _bool(row, "diverse_routing", False)
+            site.cells_4g = _optional_int(row, "cells_4g")
+            site.cells_5g = _optional_int(row, "cells_5g")
             site.status = _value(row, "status", "active")
 
             if is_new:
@@ -129,6 +138,8 @@ def search_sites(db: Session, lat: float, lon: float, radius_km: float) -> list[
                     available_height_m=site.available_height_m,
                     overload=site.overload,
                     diverse_routing=site.diverse_routing,
+                    cells_4g=site.cells_4g,
+                    cells_5g=site.cells_5g,
                     status=site.status,
                     distance_km=round(distance, 3),
                     bearing_deg=round(bearing_deg(lat, lon, site.latitude, site.longitude), 1),

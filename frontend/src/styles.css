@@ -24,6 +24,22 @@ select {
   grid-template-columns: minmax(360px, 420px) 1fr;
 }
 
+.batchShell { min-height: 100vh; padding: 24px; display: grid; align-content: start; gap: 16px; }
+.batchHeader { display: flex; justify-content: space-between; align-items: center; }
+.batchHeader h1 { margin: 0 0 4px; font-size: 24px; }
+.batchHeader p, .batchHint { margin: 0; color: #697386; }
+.batchControls { display: flex; gap: 10px; align-items: end; padding: 16px; background: #fff; border: 1px solid #d6dbe3; border-radius: 8px; }
+.batchControls label { max-width: 180px; }
+.batchErrors { padding: 12px 16px; background: #fff7ed; border: 1px solid #fed7aa; border-radius: 8px; color: #9a3412; }
+.batchErrors h2 { margin: 0 0 8px; font-size: 16px; }
+.batchErrors p { margin: 4px 0; }
+.batchProgress { display: grid; gap: 6px; padding: 12px 16px; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; color: #1d4ed8; }
+.batchProgress progress { width: 100%; height: 14px; }
+.batchTable { overflow: auto; background: #fff; border: 1px solid #d6dbe3; border-radius: 8px; max-height: calc(100vh - 220px); }
+.batchTable table { width: 100%; border-collapse: collapse; white-space: nowrap; }
+.batchTable th, .batchTable td { padding: 10px 12px; border-bottom: 1px solid #e5e7eb; text-align: left; font-size: 13px; }
+.batchTable th { position: sticky; top: 0; background: #f8fafc; }
+
 .chatPanel {
   background: #ffffff;
   border-right: 1px solid #d6dbe3;
@@ -217,6 +233,47 @@ button:disabled {
   border: 1px solid #d6dbe3;
   border-radius: 8px;
   background: #f8fafc;
+}
+
+.filterPanel,
+.filterInline {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #d6dbe3;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.filterPanel > span {
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.filterInline {
+  min-width: 340px;
+  grid-template-columns: repeat(2, minmax(140px, 1fr));
+  align-self: stretch;
+}
+
+.checkRow {
+  display: inline-flex;
+  grid-template-columns: none;
+  align-items: center;
+  gap: 8px;
+  max-width: none;
+  font-weight: 700;
+}
+
+.checkRow input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+}
+
+.thresholdRow input[type="number"] {
+  width: 76px;
+  padding: 6px 8px;
 }
 
 .message {

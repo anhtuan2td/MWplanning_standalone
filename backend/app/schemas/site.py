@@ -12,6 +12,8 @@ class SiteOut(BaseModel):
     available_height_m: float
     overload: int = 0
     diverse_routing: bool = False
+    cells_4g: int | None = None
+    cells_5g: int | None = None
     status: str
 
     model_config = {"from_attributes": True}

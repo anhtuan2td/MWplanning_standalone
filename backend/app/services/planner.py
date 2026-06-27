@@ -1,6 +1,7 @@
 from collections.abc import Awaitable, Callable
 from time import perf_counter
 from math import atan2, degrees
+import re
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -8,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_band_config, get_planner_config, get_settings
 from app.rf.fresnel import fresnel_clearance
 from app.rf.los import check_los
+from app.rf.availability import estimate_availability_details
 from app.schemas.planning import (
     CandidateLink,
     CalloffInfo,
@@ -37,6 +39,10 @@ from app.terrain.dem import DemSampler
 from app.terrain.profile import generate_profile
 
 
+RADIUS_SCAN_STEP_KM = 1.0
+MIN_CANDIDATE_DISTANCE_KM = 1.0
+
+
 def _normalize_site_code(value: str) -> str:
     return "".join(value.upper().split())
 
@@ -55,6 +61,40 @@ def _auto_band(distance_km: float) -> str:
         if distance_km <= max_distance:
             return band
     return ranked_bands[-1][0] if ranked_bands else "6GHz"
+
+
+def _candidate_scan_radius(distance_km: float, step_km: float = RADIUS_SCAN_STEP_KM) -> float:
+    if distance_km <= 0:
+        return step_km
+    return ((int((distance_km - 0.000001) / step_km) + 1) * step_km)
+
+
+def _radius_scan_candidates(
+    db: Session,
+    request: SingleLinkPlanRequest,
+    max_radius_km: float,
+) -> list:
+    new_site_code = _normalize_site_code(request.site_name)
+    min_distance_km = max(MIN_CANDIDATE_DISTANCE_KM, request.min_radius_km or 0.0)
+    return [
+        candidate
+        for candidate in search_sites(db, request.latitude, request.longitude, max_radius_km)
+        if _normalize_site_code(candidate.site_code) != new_site_code
+        and candidate.distance_km >= min_distance_km
+    ]
+
+
+def _candidate_scan_rings(candidates: list, max_radius_km: float) -> list[list]:
+    rings: list[list] = []
+    consumed = 0
+    while consumed < len(candidates):
+        selected_radius = min(max_radius_km, _candidate_scan_radius(candidates[consumed].distance_km))
+        ring = []
+        while consumed < len(candidates) and candidates[consumed].distance_km <= selected_radius:
+            ring.append(candidates[consumed])
+            consumed += 1
+        rings.append(ring)
+    return rings
 
 
 def _freq_label(band: str, side: str) -> str:
@@ -102,20 +142,15 @@ def _overlapping_existing_height(
     return min(overlapping_heights) if overlapping_heights else None
 
 
-def _calloff(
+def _effective_root_height(
     db: Session,
-    new_site: str,
-    new_endpoint: Endpoint,
     candidate,
     band: str,
-    new_height: float,
-    root_height: float,
-    distance_km: float,
-) -> CalloffInfo:
+    root_azimuth: float,
+    available_height_m: float,
+) -> float:
     config = get_planner_config().get("calloff", {})
-    root_side = root_side_for_new_link(candidate.site_code, band)
-    new_side = "high" if root_side == "low" else "low" if root_side == "high" else ""
-    root_azimuth = bearing_deg(candidate.latitude, candidate.longitude, new_endpoint.latitude, new_endpoint.longitude)
+    root_height = available_height_m
     lowest_existing_height = lowest_height_for_site(candidate.site_code)
     if lowest_existing_height is not None:
         root_height = min(root_height, lowest_existing_height)
@@ -128,6 +163,23 @@ def _calloff(
     )
     if overlap_height is not None:
         root_height = max(0, min(root_height, overlap_height - float(config.get("overlap_height_step_down_m", 3))))
+    return root_height
+
+
+def _calloff(
+    db: Session,
+    new_site: str,
+    new_endpoint: Endpoint,
+    candidate,
+    band: str,
+    new_height: float,
+    root_height: float,
+    distance_km: float,
+) -> CalloffInfo:
+    root_side = root_side_for_new_link(candidate.site_code, band)
+    new_side = "high" if root_side == "low" else "low" if root_side == "high" else ""
+    root_azimuth = bearing_deg(candidate.latitude, candidate.longitude, new_endpoint.latitude, new_endpoint.longitude)
+    root_height = _effective_root_height(db, candidate, band, root_azimuth, root_height)
     antenna_diameter = suggested_antenna_diameter(band, distance_km)
     new_total_elevation = new_endpoint.ground_elevation_m + new_height
     root_total_elevation = candidate.ground_elevation_m + root_height
@@ -193,6 +245,43 @@ def _apply_operational_rules(link: LinkCheckResult, candidate, existing_link_cou
             link.status = "OVERLINK"
 
 
+def _site_code_number(site_code: str) -> int | None:
+    matches = re.findall(r"\d+", site_code)
+    return int(matches[-1]) if matches else None
+
+
+def _apply_acceptance_filters(link: LinkCheckResult, candidate, existing_link_count: int, config: dict) -> None:
+    filters = config.get("accepted_filters", {})
+    if hasattr(filters, "model_dump"):
+        filters = filters.model_dump()
+    if not filters:
+        return
+
+    reject_reasons: list[str] = []
+    blocked_text = str(filters.get("reject_site_code_contains") or "")
+    if blocked_text and blocked_text in candidate.site_code:
+        reject_reasons.append(f"site_code contains {blocked_text}")
+
+    min_site_code_number = filters.get("min_site_code_number")
+    if min_site_code_number is not None:
+        site_code_number = _site_code_number(candidate.site_code)
+        if site_code_number is None or site_code_number <= int(min_site_code_number):
+            reject_reasons.append(f"site_code number <= {int(min_site_code_number)}")
+
+    if bool(filters.get("reject_overload")) and int(candidate.overload or 0) >= 1:
+        reject_reasons.append("overload")
+
+    if bool(filters.get("reject_overlink")) and existing_link_count >= 2:
+        reject_reasons.append("overlink")
+
+    if not reject_reasons:
+        return
+
+    for reason in reject_reasons:
+        _append_flag(link, f"Acceptance filter - {reason}")
+    link.status = "REJECTED"
+
+
 def check_link(request: LinkCheckRequest) -> LinkCheckResult:
     distance_km = haversine_km(request.a.latitude, request.a.longitude, request.b.latitude, request.b.longitude)
     band = request.band if request.band and request.band != "AUTO" else _auto_band(distance_km)
@@ -212,6 +301,11 @@ def check_link(request: LinkCheckRequest) -> LinkCheckResult:
     profile = generate_profile(request.a, request.b, request.step_m)
     los_pass, worst_clearance_m, worst_point_km = check_los(profile)
     fresnel_percent, minimum_clearance_m = fresnel_clearance(profile, band)
+    availability_details = estimate_availability_details(
+        distance_km, band, request.rain_zone, request.antenna_diameter_m, request.a.latitude, request.equipment_profile
+    )
+    availability = float(availability_details["availability_percent"])
+    rain_zone = str(availability_details["rain_zone"])
     tower_margin_m = min(request.a.tower_height_m, request.b.tower_height_m) - max(0.0, -worst_clearance_m)
     score, status, flags = score_link(
         los_pass=los_pass,
@@ -220,6 +314,7 @@ def check_link(request: LinkCheckRequest) -> LinkCheckResult:
         distance_km=distance_km,
         band=band,
         tower_margin_m=tower_margin_m,
+        availability_percent=availability,
         diverse_routing=False,
     )
     return LinkCheckResult(
@@ -234,19 +329,19 @@ def check_link(request: LinkCheckRequest) -> LinkCheckResult:
         status=status,
         risk_flags=flags,
         terrain_profile=profile,
+        availability_percent=availability,
+        rain_zone=rain_zone,
+        fade_margin_db=float(availability_details["fade_margin_db"]),
+        equipment_profile=str(availability_details["equipment_profile"]),
     )
 
 
 def plan_single_link(db: Session, request: SingleLinkPlanRequest) -> SingleLinkPlanResult:
     started_at = perf_counter()
     config = get_planner_config()
+    acceptance_config = {**config, "accepted_filters": request.accepted_filters or config.get("accepted_filters", {})}
     radius = request.radius_km or float(config.get("candidate_radius_km", 30))
-    new_site_code = _normalize_site_code(request.site_name)
-    candidates = [
-        candidate
-        for candidate in search_sites(db, request.latitude, request.longitude, radius)
-        if _normalize_site_code(candidate.site_code) != new_site_code
-    ]
+    candidates = _radius_scan_candidates(db, request, radius)
     sampler = DemSampler()
     sample_elevation = sampler.sample_surface if get_settings().worldcover_apply_height_offsets else sampler.sample
     new_site = Endpoint(
@@ -259,30 +354,39 @@ def plan_single_link(db: Session, request: SingleLinkPlanRequest) -> SingleLinkP
     accepted: list[CandidateLink] = []
     rejected: list[CandidateLink] = []
     processed = 0
-    for candidate in candidates:
-        candidate_endpoint = Endpoint(
-            latitude=candidate.latitude,
-            longitude=candidate.longitude,
-            ground_elevation_m=candidate.ground_elevation_m,
-            tower_height_m=candidate.available_height_m,
-        )
-        distance_km = haversine_km(new_site.latitude, new_site.longitude, candidate_endpoint.latitude, candidate_endpoint.longitude)
-        band = request.band if request.band and request.band != "AUTO" else _auto_band(distance_km)
-        link = check_link(LinkCheckRequest(a=new_site, b=candidate_endpoint, band=band))
-        item = CandidateLink(
-            candidate=candidate,
-            link=link,
-            calloff=_calloff(db, request.site_name, new_site, candidate, link.band, request.tower_height_m, candidate.available_height_m, link.distance_km),
-        )
-        if item.calloff:
-            _apply_calloff_conflict(link, item.calloff)
-        candidate_links = links_for_site(candidate.site_code)
-        _apply_operational_rules(link, candidate, len(candidate_links), config)
-        if link.status == "REJECTED":
-            rejected.append(item)
-        else:
-            accepted.append(item)
-        processed += 1
+    for ring in _candidate_scan_rings(candidates, radius):
+        ring_accepted = 0
+        for candidate in ring:
+            root_azimuth = bearing_deg(candidate.latitude, candidate.longitude, new_site.latitude, new_site.longitude)
+            distance_km = haversine_km(new_site.latitude, new_site.longitude, candidate.latitude, candidate.longitude)
+            band = request.band if request.band and request.band != "AUTO" else _auto_band(distance_km)
+            root_height = _effective_root_height(db, candidate, band, root_azimuth, candidate.available_height_m)
+            candidate_endpoint = Endpoint(
+                latitude=candidate.latitude,
+                longitude=candidate.longitude,
+                ground_elevation_m=candidate.ground_elevation_m,
+                tower_height_m=root_height,
+            )
+            diameter = request.antenna_diameter_m or suggested_antenna_diameter(band, distance_km)
+            link = check_link(LinkCheckRequest(a=new_site, b=candidate_endpoint, band=band, rain_zone=request.rain_zone, antenna_diameter_m=diameter, equipment_profile=request.equipment_profile))
+            item = CandidateLink(
+                candidate=candidate,
+                link=link,
+                calloff=_calloff(db, request.site_name, new_site, candidate, link.band, request.tower_height_m, root_height, link.distance_km),
+            )
+            if item.calloff:
+                _apply_calloff_conflict(link, item.calloff)
+            candidate_links = links_for_site(candidate.site_code)
+            _apply_operational_rules(link, candidate, len(candidate_links), config)
+            _apply_acceptance_filters(link, candidate, len(candidate_links), acceptance_config)
+            if link.status == "REJECTED":
+                rejected.append(item)
+            else:
+                accepted.append(item)
+                ring_accepted += 1
+            processed += 1
+        if ring_accepted:
+            break
 
     accepted.sort(key=lambda item: item.link.score, reverse=True)
     for rank, item in enumerate(accepted, start=1):
@@ -311,13 +415,9 @@ async def plan_single_link_cancellable(
 ) -> SingleLinkPlanResult:
     started_at = perf_counter()
     config = get_planner_config()
+    acceptance_config = {**config, "accepted_filters": request.accepted_filters or config.get("accepted_filters", {})}
     radius = request.radius_km or float(config.get("candidate_radius_km", 30))
-    new_site_code = _normalize_site_code(request.site_name)
-    candidates = [
-        candidate
-        for candidate in search_sites(db, request.latitude, request.longitude, radius)
-        if _normalize_site_code(candidate.site_code) != new_site_code
-    ]
+    candidates = _radius_scan_candidates(db, request, radius)
     sampler = DemSampler()
     sample_elevation = sampler.sample_surface if get_settings().worldcover_apply_height_offsets else sampler.sample
     new_site = Endpoint(
@@ -330,32 +430,41 @@ async def plan_single_link_cancellable(
     accepted: list[CandidateLink] = []
     rejected: list[CandidateLink] = []
     processed = 0
-    for candidate in candidates:
-        if await should_cancel():
+    for ring in _candidate_scan_rings(candidates, radius):
+        ring_accepted = 0
+        for candidate in ring:
+            if await should_cancel():
+                break
+            root_azimuth = bearing_deg(candidate.latitude, candidate.longitude, new_site.latitude, new_site.longitude)
+            distance_km = haversine_km(new_site.latitude, new_site.longitude, candidate.latitude, candidate.longitude)
+            band = request.band if request.band and request.band != "AUTO" else _auto_band(distance_km)
+            root_height = _effective_root_height(db, candidate, band, root_azimuth, candidate.available_height_m)
+            candidate_endpoint = Endpoint(
+                latitude=candidate.latitude,
+                longitude=candidate.longitude,
+                ground_elevation_m=candidate.ground_elevation_m,
+                tower_height_m=root_height,
+            )
+            diameter = request.antenna_diameter_m or suggested_antenna_diameter(band, distance_km)
+            link = check_link(LinkCheckRequest(a=new_site, b=candidate_endpoint, band=band, rain_zone=request.rain_zone, antenna_diameter_m=diameter, equipment_profile=request.equipment_profile))
+            item = CandidateLink(
+                candidate=candidate,
+                link=link,
+                calloff=_calloff(db, request.site_name, new_site, candidate, link.band, request.tower_height_m, root_height, link.distance_km),
+            )
+            if item.calloff:
+                _apply_calloff_conflict(link, item.calloff)
+            candidate_links = links_for_site(candidate.site_code)
+            _apply_operational_rules(link, candidate, len(candidate_links), config)
+            _apply_acceptance_filters(link, candidate, len(candidate_links), acceptance_config)
+            if link.status == "REJECTED":
+                rejected.append(item)
+            else:
+                accepted.append(item)
+                ring_accepted += 1
+            processed += 1
+        if ring_accepted or await should_cancel():
             break
-        candidate_endpoint = Endpoint(
-            latitude=candidate.latitude,
-            longitude=candidate.longitude,
-            ground_elevation_m=candidate.ground_elevation_m,
-            tower_height_m=candidate.available_height_m,
-        )
-        distance_km = haversine_km(new_site.latitude, new_site.longitude, candidate_endpoint.latitude, candidate_endpoint.longitude)
-        band = request.band if request.band and request.band != "AUTO" else _auto_band(distance_km)
-        link = check_link(LinkCheckRequest(a=new_site, b=candidate_endpoint, band=band))
-        item = CandidateLink(
-            candidate=candidate,
-            link=link,
-            calloff=_calloff(db, request.site_name, new_site, candidate, link.band, request.tower_height_m, candidate.available_height_m, link.distance_km),
-        )
-        if item.calloff:
-            _apply_calloff_conflict(link, item.calloff)
-        candidate_links = links_for_site(candidate.site_code)
-        _apply_operational_rules(link, candidate, len(candidate_links), config)
-        if link.status == "REJECTED":
-            rejected.append(item)
-        else:
-            accepted.append(item)
-        processed += 1
 
     accepted.sort(key=lambda item: item.link.score, reverse=True)
     for rank, item in enumerate(accepted, start=1):

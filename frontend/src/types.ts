@@ -9,6 +9,8 @@ export type Site = {
   available_height_m: number;
   overload: number;
   diverse_routing: boolean;
+  cells_4g: number | null;
+  cells_5g: number | null;
   status: string;
   distance_km: number;
   bearing_deg: number;
@@ -33,6 +35,10 @@ export type LinkResult = {
   status: string;
   risk_flags: string[];
   terrain_profile: TerrainProfile;
+  availability_percent: number;
+  rain_zone: string;
+  fade_margin_db: number;
+  equipment_profile: string;
 };
 
 export type CalloffInfo = {

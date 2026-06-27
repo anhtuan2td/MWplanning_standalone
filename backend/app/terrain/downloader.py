@@ -124,6 +124,46 @@ def download_dem_tiles(latitude: float, longitude: float, radius_km: float) -> D
     )
 
 
+def download_dem_tile_names(requested: list[str]) -> DemDownloadResult:
+    dem_directory = get_settings().dem_directory
+    dem_directory.mkdir(parents=True, exist_ok=True)
+    downloaded: list[str] = []
+    existing: list[str] = []
+    failed: list[str] = []
+
+    for tile in sorted(set(requested)):
+        tif_path = dem_directory / f"{tile}.tif"
+        if tif_path.exists():
+            existing.append(tile)
+            continue
+        try:
+            if get_settings().dem_source == "copernicus":
+                try:
+                    urlretrieve(_copernicus_tile_url(tile), tif_path)
+                except Exception:
+                    gz_path = dem_directory / f"{tile}.hgt.gz"
+                    if not gz_path.exists():
+                        urlretrieve(_skadi_tile_url(tile), gz_path)
+                    _convert_hgt_gz_to_tif(gz_path, tif_path)
+            else:
+                gz_path = dem_directory / f"{tile}.hgt.gz"
+                if not gz_path.exists():
+                    urlretrieve(_skadi_tile_url(tile), gz_path)
+                _convert_hgt_gz_to_tif(gz_path, tif_path)
+            downloaded.append(tile)
+        except (HTTPError, URLError, OSError, rasterio.errors.RasterioError):
+            failed.append(tile)
+
+    DemSampler.clear_cache()
+
+    return DemDownloadResult(
+        requested_tiles=sorted(set(requested)),
+        downloaded_tiles=downloaded,
+        existing_tiles=existing,
+        failed_tiles=failed,
+    )
+
+
 def _worldcover_tiles_for_radius(latitude: float, longitude: float, radius_km: float) -> list[str]:
     lat_delta = radius_km / 111.0
     lon_scale = max(math.cos(math.radians(latitude)), 0.1)
@@ -169,7 +209,60 @@ def download_worldcover_tiles(latitude: float, longitude: float, radius_km: floa
     return result
 
 
+def download_worldcover_tile_names(requested: list[str]) -> WorldCoverDownloadResult:
+    worldcover_directory = get_settings().worldcover_directory
+    worldcover_directory.mkdir(parents=True, exist_ok=True)
+    downloaded: list[str] = []
+    existing: list[str] = []
+    failed: list[str] = []
+
+    for tile in sorted(set(requested)):
+        tile_path = worldcover_directory / tile
+        if tile_path.exists():
+            existing.append(tile)
+            continue
+        try:
+            urlretrieve(_worldcover_tile_url(tile), tile_path)
+            downloaded.append(tile)
+        except (HTTPError, URLError, OSError):
+            failed.append(tile)
+
+    DemSampler.clear_cache()
+
+    return WorldCoverDownloadResult(
+        requested_tiles=sorted(set(requested)),
+        downloaded_tiles=downloaded,
+        existing_tiles=existing,
+        failed_tiles=failed,
+    )
+
+
 def download_gis_tiles(latitude: float, longitude: float, radius_km: float) -> GisDownloadResult:
     dem_result = download_dem_tiles(latitude, longitude, radius_km)
     worldcover_result = download_worldcover_tiles(latitude, longitude, radius_km)
+    return GisDownloadResult(dem=dem_result, worldcover=worldcover_result)
+
+
+def central_region_gis_tiles() -> tuple[list[str], list[str]]:
+    # Broad operational region: Quang Tri/Quang Binh down to Binh Thuan,
+    # Dak Nong and Lam Dong. Kept as tile floors to avoid expensive geometry.
+    min_lat, max_lat = 10, 18
+    min_lon, max_lon = 105, 109
+    dem_tiles = [
+        _tile_name(lat, lon)
+        for lat in range(min_lat, max_lat + 1)
+        for lon in range(min_lon, max_lon + 1)
+    ]
+    worldcover_tiles = sorted({
+        _worldcover_tile_name(lat, lon)
+        for lat in range(min_lat, max_lat + 1)
+        for lon in range(min_lon, max_lon + 1)
+    })
+    return dem_tiles, worldcover_tiles
+
+
+def download_central_region_gis_tiles() -> GisDownloadResult:
+    dem_tiles, worldcover_tiles = central_region_gis_tiles()
+    dem_result = download_dem_tile_names(dem_tiles)
+    worldcover_result = download_worldcover_tile_names(worldcover_tiles)
     return GisDownloadResult(dem=dem_result, worldcover=worldcover_result)

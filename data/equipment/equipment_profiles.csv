@@ -1,0 +1,6 @@
+profile_id,vendor,model,band_ghz,channel_bw_mhz,modulation,capacity_mbps,rx_threshold_dbm,tx_power_min_dbm,tx_power_max_dbm
+RACOM_RAy3_24_3.5_QPSK_S,RACOM,RAy3,24,3.5,QPSK_S,3,-99,-30,10
+RACOM_RAy3_24_3.5_QPSK,RACOM,RAy3,24,3.5,QPSK,5,-95,-30,10
+RACOM_RAy3_24_3.5_16QAM,RACOM,RAy3,24,3.5,16QAM,10,-89,-30,10
+RACOM_RAy3_24_56_256QAM,RACOM,RAy3,24,56,256QAM,366,-65,-30,10
+RACOM_RAy3_24_112_2048QAM,RACOM,RAy3,24,112,2048QAM,1002,-53,-30,10

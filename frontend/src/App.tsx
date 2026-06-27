@@ -17,11 +17,14 @@ import {
   fetchSystemStatus,
   importMwLinks,
   importSites,
+  importEquipment,
+  fetchEquipmentProfiles,
   planSingleLink,
   shutdownApp,
-  type PlanRequest
+  type AcceptedFilters, type PlanRequest, type EquipmentProfile
 } from "./api";
 import type { CalloffRules, CandidateLink, PlanResult, SystemStatus } from "./types";
+import { BatchDesign } from "./components/BatchDesign";
 
 const CandidateMap = lazy(() => import("./components/CandidateMap").then((module) => ({ default: module.CandidateMap })));
 const TerrainChart = lazy(() => import("./components/TerrainChart").then((module) => ({ default: module.TerrainChart })));
@@ -32,7 +35,14 @@ const initialForm: PlanRequest = {
   longitude: 108.221,
   tower_height_m: 30,
   radius_km: 30,
-  band: "AUTO"
+  min_radius_km: 0,
+  band: "AUTO",
+  accepted_filters: {
+    reject_site_code_contains: "-",
+    min_site_code_number: null,
+    reject_overload: true,
+    reject_overlink: true
+  }
 };
 
 type ChatMessage = {
@@ -69,6 +79,16 @@ function id() {
 
 function formatCandidate(row: CandidateLink) {
   return `${row.candidate.site_code}: ${row.link.distance_km.toFixed(2)} km, ${row.link.band}, score ${row.link.score.toFixed(1)}, ${row.link.status}`;
+}
+
+function updateAcceptedFilters(form: PlanRequest, patch: Partial<AcceptedFilters>): PlanRequest {
+  const current = form.accepted_filters ?? {
+    reject_site_code_contains: null,
+    min_site_code_number: null,
+    reject_overload: false,
+    reject_overlink: false
+  };
+  return { ...form, accepted_filters: { ...current, ...patch } };
 }
 
 function tileName(latFloor: number, lonFloor: number) {
@@ -126,23 +146,59 @@ function missingGis(status: SystemStatus | null, request: PlanRequest) {
   return { dem, worldcover };
 }
 
+function parseCoordinatePair(text: string): { lat: number; lon: number } | null {
+  const normalized = text.replace(/,/g, " ");
+  const coordPattern = /(?:^|[^A-Za-z0-9_.-])(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)(?=$|[^A-Za-z0-9_.-])/g;
+  let match: RegExpExecArray | null = null;
+  while ((match = coordPattern.exec(normalized)) !== null) {
+    const lat = Number(match[1]);
+    const lon = Number(match[2]);
+    if (Math.abs(lat) <= 90 && Math.abs(lon) <= 180) {
+      return { lat, lon };
+    }
+  }
+  return null;
+}
+
+function parseSiteName(text: string): string | null {
+  const explicitSite = text.match(/(?:site|t[eê]n|name)\s*[:=]?\s*([A-Za-z][A-Za-z0-9_-]{2,})/i);
+  if (explicitSite) return explicitSite[1].toUpperCase();
+
+  const planSite = text.match(/(?:plan|planning|quy\s*ho[aạ]ch)\s+(?:site\s+)?([A-Za-z][A-Za-z0-9_-]{2,})/i);
+  return planSite ? planSite[1].toUpperCase() : null;
+}
+
+function stripVietnameseMarks(text: string): string {
+  return text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/g, "d").replace(/Đ/g, "D");
+}
+
 function parseChatPlan(text: string, current: PlanRequest): { nextForm: PlanRequest; changed: string[] } {
   const nextForm = { ...current };
   const changed: string[] = [];
-  const normalized = text.replace(/,/g, " ");
+  const keywordText = stripVietnameseMarks(text);
 
-  const coordMatch = normalized.match(/(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)/);
-  if (coordMatch) {
-    const lat = Number(coordMatch[1]);
-    const lon = Number(coordMatch[2]);
-    if (Math.abs(lat) <= 90 && Math.abs(lon) <= 180) {
-      nextForm.latitude = lat;
-      nextForm.longitude = lon;
-      changed.push(`tọa độ ${lat}, ${lon}`);
-    }
+  const coords = parseCoordinatePair(text);
+  if (coords) {
+    nextForm.latitude = coords.lat;
+    nextForm.longitude = coords.lon;
+    changed.push(`tọa độ ${coords.lat}, ${coords.lon}`);
   }
 
-  const radiusMatch = text.match(/(?:radius|b[aá]n k[ií]nh|r)\s*[:=]?\s*(\d+(?:\.\d+)?)\s*(?:km)?/i);
+  const minRadiusMatch = keywordText.match(/(?:min(?:imum)?\s+radius|min(?:imum)?\s+r|ban kinh\s+toi\s+thieu)\s*[:=]?\s*(\d+(?:\.\d+)?)\s*(?:km)?/i);
+  if (minRadiusMatch) {
+    nextForm.min_radius_km = Number(minRadiusMatch[1]);
+    changed.push(`bán kính tối thiểu ${nextForm.min_radius_km} km`);
+  }
+
+  const radiusPattern = /(?:max(?:imum)?\s*)?(?:radius|ban kinh|r)\s*[:=]?\s*(\d+(?:\.\d+)?)\s*(?:km)?/gi;
+  let radiusMatch: RegExpExecArray | null = null;
+  let candidateRadiusMatch: RegExpExecArray | null = null;
+  while ((candidateRadiusMatch = radiusPattern.exec(keywordText)) !== null) {
+    const prefix = keywordText.slice(0, candidateRadiusMatch.index).toLowerCase();
+    if (!/(?:min(?:imum)?\s*)$/.test(prefix)) {
+      radiusMatch = candidateRadiusMatch;
+    }
+  }
   if (radiusMatch) {
     nextForm.radius_km = Number(radiusMatch[1]);
     changed.push(`bán kính ${nextForm.radius_km} km`);
@@ -154,9 +210,9 @@ function parseChatPlan(text: string, current: PlanRequest): { nextForm: PlanRequ
     changed.push(`cao anten ${nextForm.tower_height_m} m`);
   }
 
-  const siteMatch = text.match(/(?:site|t[eê]n|name)\s*[:=]?\s*([A-Za-z0-9_-]{3,})/i);
+  const siteMatch = parseSiteName(text);
   if (siteMatch) {
-    nextForm.site_name = siteMatch[1].toUpperCase();
+    nextForm.site_name = siteMatch;
     changed.push(`site ${nextForm.site_name}`);
   }
 
@@ -180,6 +236,7 @@ function isHelpIntent(text: string) {
 }
 
 export default function App() {
+  const [batchMode, setBatchModeState] = useState(() => window.location.hash === "#batch" || localStorage.getItem("mw_batch_mode") === "1");
   const [form, setForm] = useState<PlanRequest>(initialForm);
   const [result, setResult] = useState<PlanResult | null>(null);
   const [selected, setSelected] = useState<CandidateLink | null>(null);
@@ -190,6 +247,7 @@ export default function App() {
   const [showExports, setShowExports] = useState(false);
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
   const [calloffRules, setCalloffRules] = useState<CalloffRules | null>(null);
+  const [equipmentProfiles, setEquipmentProfiles] = useState<EquipmentProfile[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     {
@@ -200,6 +258,16 @@ export default function App() {
   ]);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const planningAbortRef = useRef<AbortController | null>(null);
+
+  function setBatchMode(value: boolean) {
+    setBatchModeState(value);
+    localStorage.setItem("mw_batch_mode", value ? "1" : "0");
+    if (value) {
+      window.history.replaceState(null, "", "#batch");
+    } else if (window.location.hash === "#batch") {
+      window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    }
+  }
 
   const rows = useMemo(() => {
     if (!result) return [];
@@ -237,6 +305,7 @@ export default function App() {
   useEffect(() => {
     refreshSystemStatus();
     fetchCalloffRules().then(setCalloffRules).catch(() => setCalloffRules(null));
+    fetchEquipmentProfiles().then(setEquipmentProfiles).catch(() => setEquipmentProfiles([]));
   }, []);
 
   async function refreshWorkspace(announce = true) {
@@ -260,6 +329,12 @@ export default function App() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function onEquipmentUpload(file?: File) {
+    if (!file) return;
+    try { const imported = await importEquipment(file); setEquipmentProfiles(await fetchEquipmentProfiles()); setMessage(`Equipment: imported ${imported.imported}, total ${imported.total}.`); }
+    catch (error) { setMessage(displayError(error, "Equipment import failed")); }
   }
 
   async function exitApp() {
@@ -432,7 +507,7 @@ export default function App() {
 
   function exportCsv() {
     if (!result) return;
-    const header = ["rank", "site_code", "distance_km", "los", "fresnel_percent", "score", "status", "risk_flags"];
+    const header = ["rank", "site_code", "distance_km", "los", "fresnel_percent", "availability_percent", "rain_zone", "score", "status", "risk_flags"];
     const lines = rows.map((row) =>
       [
         row.rank ?? "",
@@ -440,6 +515,8 @@ export default function App() {
         row.link.distance_km,
         row.link.los_pass ? "PASS" : "FAIL",
         row.link.fresnel_clearance_percent,
+        row.link.availability_percent,
+        row.link.rain_zone,
         row.link.score,
         row.link.status,
         row.link.risk_flags.join("|")
@@ -554,6 +631,8 @@ export default function App() {
     pushMessage("assistant", "Tôi chưa hiểu lệnh này. Gõ help để xem mẫu câu.");
   }
 
+  if (batchMode) return <BatchDesign onClose={() => setBatchMode(false)} />;
+
   return (
     <main className="chatShell">
       <section className="chatPanel">
@@ -593,6 +672,7 @@ export default function App() {
         </form>
 
         <div className="quickActions">
+          <button type="button" onClick={() => setBatchMode(true)}>Design theo lô</button>
           <button onClick={() => runPlan(form)} disabled={busy}>
             <RadioTower size={18} />
             Run
@@ -636,6 +716,12 @@ export default function App() {
                 <input type="number" value={form.longitude} onChange={(e) => setForm({ ...form, longitude: Number(e.target.value) })} />
               </label>
             </div>
+            <label>
+              Equipment profile
+              <select value={form.equipment_profile ?? "RACOM_RAy3_24_56_256QAM"} onChange={(e) => setForm({ ...form, equipment_profile: e.target.value })}>
+                {equipmentProfiles.map((profile) => <option key={profile.profile_id} value={profile.profile_id}>{profile.vendor} {profile.model} · {profile.band_ghz}GHz/{profile.channel_bw_mhz}MHz · {profile.modulation}</option>)}
+              </select>
+            </label>
             <div className="grid2">
               <label>
                 Tower m
@@ -646,6 +732,54 @@ export default function App() {
                 <input type="number" value={form.radius_km} onChange={(e) => setForm({ ...form, radius_km: Number(e.target.value) })} />
               </label>
             </div>
+            <div className="grid2">
+              <label>
+                Min radius km
+                <input type="number" value={form.min_radius_km ?? 0} onChange={(e) => setForm({ ...form, min_radius_km: Number(e.target.value) })} />
+              </label>
+              <div />
+            </div>
+            <div className="filterPanel">
+              <span>Accepted filters</span>
+              <label className="checkRow">
+                <input
+                  type="checkbox"
+                  checked={form.accepted_filters?.reject_site_code_contains === "-"}
+                  onChange={(e) => setForm(updateAcceptedFilters(form, { reject_site_code_contains: e.target.checked ? "-" : null }))}
+                />
+                Loại site code có dấu -
+              </label>
+              <label className="checkRow">
+                <input
+                  type="checkbox"
+                  checked={Boolean(form.accepted_filters?.reject_overload)}
+                  onChange={(e) => setForm(updateAcceptedFilters(form, { reject_overload: e.target.checked }))}
+                />
+                Loại overload
+              </label>
+              <label className="checkRow">
+                <input
+                  type="checkbox"
+                  checked={Boolean(form.accepted_filters?.reject_overlink)}
+                  onChange={(e) => setForm(updateAcceptedFilters(form, { reject_overlink: e.target.checked }))}
+                />
+                Loại overlink
+              </label>
+              <label className="checkRow thresholdRow">
+                <input
+                  type="checkbox"
+                  checked={form.accepted_filters?.min_site_code_number != null}
+                  onChange={(e) => setForm(updateAcceptedFilters(form, { min_site_code_number: e.target.checked ? 0 : null }))}
+                />
+                Site code number &gt;
+                <input
+                  type="number"
+                  disabled={form.accepted_filters?.min_site_code_number == null}
+                  value={form.accepted_filters?.min_site_code_number ?? ""}
+                  onChange={(e) => setForm(updateAcceptedFilters(form, { min_site_code_number: e.target.value === "" ? null : Number(e.target.value) }))}
+                />
+              </label>
+            </div>
           </div>
         )}
 
@@ -654,6 +788,11 @@ export default function App() {
             <Upload size={18} />
             Site CSV
             <input type="file" accept=".csv" onChange={(e) => onCsvUpload(e.target.files?.[0])} />
+          </label>
+          <label className="upload">
+            <Upload size={18} />
+            Equipment CSV
+            <input type="file" accept=".csv" onChange={(e) => onEquipmentUpload(e.target.files?.[0])} />
           </label>
           <label className="upload">
             <Upload size={18} />
@@ -728,6 +867,7 @@ export default function App() {
                   <th>LOS</th>
                   <th>Fresnel</th>
                   <th>Band</th>
+                  <th>Availability</th>
                   <th>Score</th>
                   <th>Status</th>
                   <th>Notes</th>
@@ -743,6 +883,7 @@ export default function App() {
                     <td>{row.link.los_pass ? "PASS" : "FAIL"}</td>
                     <td>{row.link.fresnel_clearance_percent.toFixed(1)}%</td>
                     <td>{row.link.band}</td>
+                    <td>{row.link.availability_percent.toFixed(5)}% ({row.link.rain_zone})</td>
                     <td>{row.link.score.toFixed(1)}</td>
                     <td><span className={`pill ${row.link.status.toLowerCase()}`}>{row.link.status}</span></td>
                     <td>{row.link.risk_flags.join(", ") || "-"}</td>

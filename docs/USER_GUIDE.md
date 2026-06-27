@@ -97,7 +97,7 @@ site_code,latitude,longitude
 Cot khuyen nghi:
 
 ```text
-site_code,site_name,latitude,longitude,tower_height_m,available_height_m,status,owner,region,overload,VH
+site_code,site_name,latitude,longitude,tower_height_m,available_height_m,status,owner,region,overload,VH,cells_4g,cells_5g
 ```
 
 Ghi chu:

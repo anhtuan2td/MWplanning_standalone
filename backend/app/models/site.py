@@ -22,5 +22,7 @@ class Site(Base):
     available_height_m: Mapped[float] = mapped_column(Float, default=30.0)
     overload: Mapped[int] = mapped_column(Integer, default=0)
     diverse_routing: Mapped[bool] = mapped_column(Boolean, default=False)
+    cells_4g: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cells_5g: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(40), default="active", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

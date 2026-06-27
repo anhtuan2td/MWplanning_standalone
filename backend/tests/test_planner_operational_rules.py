@@ -4,9 +4,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.models.site import Base
-from app.schemas.planning import LinkCheckResult, TerrainProfile
+from app.schemas.planning import AcceptedFilters, LinkCheckResult, TerrainProfile
 from app.services.mw_links import ExistingMwLink, antenna_rule_table, band_group, lowest_height_for_site, root_side_for_new_link
-from app.services.planner import _apply_calloff_conflict, _apply_operational_rules, _calloff
+from app.services.planner import _apply_acceptance_filters, _apply_calloff_conflict, _apply_operational_rules, _calloff, _effective_root_height
 
 
 def _link() -> LinkCheckResult:
@@ -88,6 +88,65 @@ def test_calloff_matches_mw_import_form_fields():
     assert calloff.root_site_band_side in {"High", "Low"}
     assert calloff.root_site_antenna_diameter_m > 0
     assert 0 <= calloff.root_site_azimuth_deg < 360
+
+
+def test_acceptance_filters_reject_blocked_code_overload_and_overlink():
+    link = _link()
+    candidate = SimpleNamespace(site_code="BDH0001-41", overload=1, diverse_routing=False)
+
+    _apply_acceptance_filters(
+        link,
+        candidate,
+        existing_link_count=2,
+        config={
+            "accepted_filters": {
+                "reject_site_code_contains": "-",
+                "reject_overload": True,
+                "reject_overlink": True,
+            }
+        },
+    )
+
+    assert link.status == "REJECTED"
+    assert "Acceptance filter - site_code contains -" in link.risk_flags
+    assert "Acceptance filter - overload" in link.risk_flags
+    assert "Acceptance filter - overlink" in link.risk_flags
+
+
+def test_acceptance_filters_can_require_site_code_number_above_threshold():
+    rejected = _link()
+    accepted = _link()
+
+    _apply_acceptance_filters(
+        rejected,
+        SimpleNamespace(site_code="BDH0099", overload=0),
+        existing_link_count=0,
+        config={"accepted_filters": {"min_site_code_number": 99}},
+    )
+    _apply_acceptance_filters(
+        accepted,
+        SimpleNamespace(site_code="BDH0100", overload=0),
+        existing_link_count=0,
+        config={"accepted_filters": {"min_site_code_number": 99}},
+    )
+
+    assert rejected.status == "REJECTED"
+    assert "Acceptance filter - site_code number <= 99" in rejected.risk_flags
+    assert accepted.status == "ACCEPTED"
+
+
+def test_acceptance_filters_accept_request_model_with_all_toggles_off():
+    link = _link()
+
+    _apply_acceptance_filters(
+        link,
+        SimpleNamespace(site_code="BDH0001-41", overload=1),
+        existing_link_count=2,
+        config={"accepted_filters": AcceptedFilters()},
+    )
+
+    assert link.status == "ACCEPTED"
+    assert link.risk_flags == []
 
 
 def test_low_band_group_uses_existing_7ghz_side_for_6ghz_calloff(monkeypatch):
@@ -190,9 +249,38 @@ def test_calloff_root_height_is_not_above_lowest_existing_height(monkeypatch):
     assert calloff.root_site_height_m == 28
 
 
+def test_effective_root_height_is_not_above_lowest_existing_height(monkeypatch):
+    links = (
+        ExistingMwLink(
+            site_a="ROOT001",
+            freq_a="18GHz Low",
+            antenna_diameter_a_m=0.6,
+            height_a_m=28,
+            site_b="FAR001",
+            freq_b="18GHz High",
+            antenna_diameter_b_m=0.6,
+            height_b_m=28,
+            distance_km=3,
+        ),
+    )
+    monkeypatch.setattr("app.services.mw_links.load_existing_links", lambda: links)
+
+    candidate = SimpleNamespace(
+        site_code="ROOT001",
+        latitude=13.75,
+        longitude=109.2,
+    )
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(bind=engine)
+    session_factory = sessionmaker(bind=engine)
+    with session_factory() as db:
+        assert _effective_root_height(db, candidate, "18GHz", 45, 60) == 28
+
+
 def test_antenna_rule_table_exposes_distance_band_and_antenna():
     rules = antenna_rule_table()
 
-    assert rules[0]["distance"] == "<= 5 km"
-    assert rules[0]["band"] == "18GHz"
+    assert rules[0]["distance"] == "<= 3 km"
+    assert rules[0]["band"] == "24GHz"
     assert rules[0]["antenna_diameter_m"] > 0

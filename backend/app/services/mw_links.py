@@ -95,12 +95,18 @@ def _frequency_for_side(row: dict[str, str], direct_names: list[str], side_names
     return " ".join(part for part in [frequency, side] if part)
 
 
-@lru_cache
 def load_existing_links(path: str | None = None) -> tuple[ExistingMwLink, ...]:
     runtime_link_file = _runtime_link_file()
     file_path = Path(path) if path else (runtime_link_file if runtime_link_file.exists() else _default_link_file())
     if not file_path.exists():
         return ()
+    stat = file_path.stat()
+    return _load_existing_links_cached(str(file_path.resolve()), stat.st_mtime_ns, stat.st_size)
+
+
+@lru_cache(maxsize=8)
+def _load_existing_links_cached(path: str, _mtime_ns: int, _size: int) -> tuple[ExistingMwLink, ...]:
+    file_path = Path(path)
     with file_path.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
         links = []
@@ -157,6 +163,9 @@ def load_existing_links(path: str | None = None) -> tuple[ExistingMwLink, ...]:
                 )
             )
         return tuple(links)
+
+
+load_existing_links.cache_clear = _load_existing_links_cached.cache_clear  # type: ignore[attr-defined]
 
 
 def links_for_site(site_code: str) -> list[ExistingMwLink]:
