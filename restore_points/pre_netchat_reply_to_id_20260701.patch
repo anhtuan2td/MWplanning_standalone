@@ -1,0 +1,13 @@
+﻿diff --git a/scripts/netchat_bot.py b/scripts/netchat_bot.py
+index 50f0a6b..b3c5a84 100644
+--- a/scripts/netchat_bot.py
++++ b/scripts/netchat_bot.py
+@@ -96,8 +96,6 @@ class NetChatBot:
+             "channel_id": channel_id,
+             "message": message,
+         }
+-        if root_id and self.reply_in_thread:
+-            payload["root_id"] = root_id
+ 
+         async with session.post(f"{self.base_url}/api/v4/posts", headers=headers, cookies=cookies, json=payload, ssl=self.ssl_context) as response:
+             text = await response.text()

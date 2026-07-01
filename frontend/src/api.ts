@@ -25,6 +25,12 @@ export type PlanRequest = {
   accepted_filters?: AcceptedFilters;
 };
 
+export type BatchPlanSite = Omit<PlanRequest, "tower_height_m" | "radius_km" | "band"> & {
+  tower_height_m?: number;
+  radius_km?: number | null;
+  band?: string;
+};
+
 export type AcceptedFilters = {
   reject_site_code_contains?: string | null;
   min_site_code_number?: number | null;
@@ -135,9 +141,22 @@ export type BatchCandidate = {
   status: string; availability_percent: number; rain_zone: string; fade_margin_db: number; equipment_profile: string; risk_flags: string[];
   calloff?: CalloffInfo | null;
 };
-export type BatchPlanResult = { results: Array<{ site_name: string; candidates: BatchCandidate[]; error?: string | null; gis_status?: string | null; missing_dem_tiles?: string[]; missing_worldcover_tiles?: string[] }> };
+export type BatchPlanResult = {
+  results: Array<{
+    site_name: string;
+    candidates: BatchCandidate[];
+    error?: string | null;
+    gis_status?: string | null;
+    dem_tiles?: string[];
+    missing_dem_tiles?: string[];
+    missing_worldcover_tiles?: string[];
+    bad_dem_tiles?: string[];
+    suspect_dem_tiles?: string[];
+    unknown_dem_tiles?: string[];
+  }>;
+};
 
-export async function planBatch(sites: PlanRequest[], topN: number, signal?: AbortSignal): Promise<BatchPlanResult> {
+export async function planBatch(sites: BatchPlanSite[], topN: number, signal?: AbortSignal): Promise<BatchPlanResult> {
   const response = await fetch(`${API_BASE}/plan/batch`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

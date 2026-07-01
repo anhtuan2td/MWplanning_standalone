@@ -136,8 +136,12 @@ class BatchSiteResult(BaseModel):
     candidates: list[BatchCandidate]
     error: str | None = None
     gis_status: str | None = None
+    dem_tiles: list[str] = Field(default_factory=list)
     missing_dem_tiles: list[str] = Field(default_factory=list)
     missing_worldcover_tiles: list[str] = Field(default_factory=list)
+    bad_dem_tiles: list[str] = Field(default_factory=list)
+    suspect_dem_tiles: list[str] = Field(default_factory=list)
+    unknown_dem_tiles: list[str] = Field(default_factory=list)
 
 
 class BatchPlanResult(BaseModel):

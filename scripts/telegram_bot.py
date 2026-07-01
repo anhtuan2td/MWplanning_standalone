@@ -18,10 +18,10 @@ if str(BACKEND_ROOT) not in sys.path:
 os.environ.setdefault("MW_DATABASE_URL", f"sqlite:///{(PROJECT_ROOT / 'data' / 'mwplanner.db').as_posix()}")
 
 from app.database.session import SessionLocal, init_db  # noqa: E402
-from app.schemas.planning import SingleLinkPlanRequest  # noqa: E402
-from app.services.planner import plan_single_link  # noqa: E402
-from app.terrain.downloader import download_gis_tiles, tiles_for_radius  # noqa: E402
 from app.core.config import get_settings  # noqa: E402
+from app.schemas.planning import SingleLinkPlanRequest  # noqa: E402
+from app.services.gis_preflight import repair_gis_coverage  # noqa: E402
+from app.services.planner import plan_single_link  # noqa: E402
 from app.services.site_lookup import site_lookup  # noqa: E402
 
 
@@ -35,33 +35,6 @@ Lệnh:
 
 Bot sẽ tự kiểm tra GIS. Nếu thiếu DEM/WorldCover, bot tải GIS trước rồi mới chạy planning.
 """
-
-
-def _worldcover_tile_name(lat_floor: int, lon_floor: int) -> str:
-    lat_origin = (lat_floor // 3) * 3
-    lon_origin = (lon_floor // 3) * 3
-    ns = "N" if lat_origin >= 0 else "S"
-    ew = "E" if lon_origin >= 0 else "W"
-    return f"ESA_WorldCover_10m_2020_v100_{ns}{abs(lat_origin):02d}{ew}{abs(lon_origin):03d}_Map.tif"
-
-
-def _worldcover_tiles_for_radius(latitude: float, longitude: float, radius_km: float) -> list[str]:
-    import math
-
-    lat_delta = radius_km / 111.0
-    lon_scale = max(math.cos(math.radians(latitude)), 0.1)
-    lon_delta = radius_km / (111.0 * lon_scale)
-    min_lat = math.floor(latitude - lat_delta)
-    max_lat = math.floor(latitude + lat_delta)
-    min_lon = math.floor(longitude - lon_delta)
-    max_lon = math.floor(longitude + lon_delta)
-    return sorted(
-        {
-            _worldcover_tile_name(lat, lon)
-            for lat in range(min_lat, max_lat + 1)
-            for lon in range(min_lon, max_lon + 1)
-        }
-    )
 
 
 def parse_plan(text: str) -> SingleLinkPlanRequest | None:
@@ -151,29 +124,11 @@ def parse_site_lookup(text: str) -> str | None:
 
 
 def ensure_gis(request: SingleLinkPlanRequest) -> str:
-    settings = get_settings()
-    dem_missing = [
-        tile
-        for tile in tiles_for_radius(request.latitude, request.longitude, request.radius_km or 30)
-        if not (settings.dem_directory / f"{tile}.tif").exists()
-    ]
-    worldcover_missing = [
-        tile
-        for tile in _worldcover_tiles_for_radius(request.latitude, request.longitude, request.radius_km or 30)
-        if not (settings.worldcover_directory / tile).exists()
-    ]
-    if not dem_missing and not worldcover_missing:
-        return "GIS OK."
-
-    result = download_gis_tiles(request.latitude, request.longitude, request.radius_km or 30)
-    failed = len(result.dem.failed_tiles) + len(result.worldcover.failed_tiles)
-    summary = (
-        f"GIS auto-download: DEM new {len(result.dem.downloaded_tiles)}, existing {len(result.dem.existing_tiles)}, failed {len(result.dem.failed_tiles)}; "
-        f"WorldCover new {len(result.worldcover.downloaded_tiles)}, existing {len(result.worldcover.existing_tiles)}, failed {len(result.worldcover.failed_tiles)}."
-    )
-    if failed:
-        raise RuntimeError(summary)
-    return summary
+    result = repair_gis_coverage(request)
+    if result.blocks_planning:
+        raise RuntimeError(result.error_message)
+    warnings = f" Warning: {', '.join(result.warning_flags)}." if result.warning_flags else ""
+    return f"GIS {result.status}.{warnings}"
 
 
 def format_result(request: SingleLinkPlanRequest) -> str:

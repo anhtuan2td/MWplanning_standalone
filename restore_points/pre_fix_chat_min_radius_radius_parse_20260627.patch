@@ -1,0 +1,93 @@
+﻿diff --git a/scripts/telegram_bot.py b/scripts/telegram_bot.py
+index d600c66..9606dec 100644
+--- a/scripts/telegram_bot.py
++++ b/scripts/telegram_bot.py
+@@ -22,6 +22,7 @@ from app.schemas.planning import SingleLinkPlanRequest  # noqa: E402
+ from app.services.planner import plan_single_link  # noqa: E402
+ from app.terrain.downloader import download_gis_tiles, tiles_for_radius  # noqa: E402
+ from app.core.config import get_settings  # noqa: E402
++from app.services.site_lookup import site_lookup  # noqa: E402
+ 
+ 
+ TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
+@@ -30,6 +31,7 @@ HELP_TEXT = """MW Pre-planning Telegram
+ Lệnh:
+ /plan site DN001 16.032 108.221 radius 30 height 30
+ /status
++/site DN001
+ 
+ Bot sẽ tự kiểm tra GIS. Nếu thiếu DEM/WorldCover, bot tải GIS trước rồi mới chạy planning.
+ """
+@@ -93,6 +95,60 @@ def parse_plan(text: str) -> SingleLinkPlanRequest | None:
+     )
+ 
+ 
++def parse_plan(text: str) -> SingleLinkPlanRequest | None:
++    normalized = text.replace(",", " ")
++    numbers = [float(value) for value in re.findall(r"-?\d+(?:\.\d+)?", normalized)]
++    coordinate: tuple[float, float] | None = None
++    for index in range(len(numbers) - 1):
++        lat = numbers[index]
++        lon = numbers[index + 1]
++        if abs(lat) <= 90 and abs(lon) <= 180 and abs(lon) > 90:
++            coordinate = (lat, lon)
++            break
++    if coordinate is None:
++        return None
++
++    latitude, longitude = coordinate
++    site_match = re.search(r"(?:site|ten|t[eê]n|name)\s+([A-Za-z][A-Za-z0-9_-]{2,})", text, re.IGNORECASE)
++    if site_match is None:
++        site_match = re.search(r"/plan\s+([A-Za-z][A-Za-z0-9_-]{2,})", text, re.IGNORECASE)
++    min_radius_match = re.search(
++        r"(?:min[_\s-]*(?:radius|r)|minimum[_\s-]*(?:radius|r)|min\s+ban\s+kinh|ban\s+kinh\s+toi\s+thieu|b[aá]n\s+k[ií]nh\s+t[oố]i\s+thi[eể]u)\s*[:=]?\s*(\d+(?:\.\d+)?)",
++        text,
++        re.IGNORECASE,
++    )
++    radius_match = re.search(r"(?:radius|ban kinh|b[aá]n k[ií]nh|r)\s*[:=]?\s*(\d+(?:\.\d+)?)", text, re.IGNORECASE)
++    height_match = re.search(r"(?:height|tower|cao|cot|c[oộ]t)\s*[:=]?\s*(\d+(?:\.\d+)?)", text, re.IGNORECASE)
++
++    return SingleLinkPlanRequest(
++        site_name=(site_match.group(1).upper() if site_match else "NEW_SITE"),
++        latitude=latitude,
++        longitude=longitude,
++        radius_km=float(radius_match.group(1)) if radius_match else 30,
++        min_radius_km=float(min_radius_match.group(1)) if min_radius_match else None,
++        tower_height_m=float(height_match.group(1)) if height_match else 30,
++        band="AUTO",
++    )
++
++
++def parse_site_lookup(text: str) -> str | None:
++    command = re.search(r"^/(?:site|lookup|tram)\s+([A-Za-z][A-Za-z0-9_-]{2,})\s*$", text, re.IGNORECASE)
++    if command:
++        return command.group(1).upper()
++    direct_code = re.search(r"^\s*([A-Za-z]{2,}[A-Za-z0-9_-]*\d[A-Za-z0-9_-]*)\s*$", text)
++    if direct_code:
++        return direct_code.group(1).upper()
++    if re.search(
++        r"tra\s*cứu|tra\s*cuu|thông\s*tin|thong\s*tin|trạm|tram|tuyến\s*mw|tuyen\s*mw|cell|vu\s*hồi|vu\s*hoi|overload",
++        text,
++        re.IGNORECASE,
++    ):
++        code = re.search(r"\b([A-Za-z]{2,}[A-Za-z0-9_-]*\d[A-Za-z0-9_-]*)\b", text)
++        if code:
++            return code.group(1).upper()
++    return None
++
++
+ def ensure_gis(request: SingleLinkPlanRequest) -> str:
+     settings = get_settings()
+     dem_missing = [
+@@ -189,6 +245,11 @@ class TelegramBot:
+                 f"DB: {os.environ['MW_DATABASE_URL']}\nDEM: {settings.dem_directory}\nWorldCover: {settings.worldcover_directory}",
+             )
+             return
++        lookup_code = parse_site_lookup(text)
++        if lookup_code:
++            with SessionLocal() as db:
++                await self.send_message(chat_id, site_lookup(db, lookup_code))
++            return
+         if text.startswith("/plan") or re.search(r"(quy hoach|quy hoạch|plan|site)", text, re.IGNORECASE):
+             request = parse_plan(text)
+             if request is None:

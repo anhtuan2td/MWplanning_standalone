@@ -124,7 +124,7 @@ def download_dem_tiles(latitude: float, longitude: float, radius_km: float) -> D
     )
 
 
-def download_dem_tile_names(requested: list[str]) -> DemDownloadResult:
+def download_dem_tile_names(requested: list[str], force_existing: bool = False) -> DemDownloadResult:
     dem_directory = get_settings().dem_directory
     dem_directory.mkdir(parents=True, exist_ok=True)
     downloaded: list[str] = []
@@ -134,8 +134,21 @@ def download_dem_tile_names(requested: list[str]) -> DemDownloadResult:
     for tile in sorted(set(requested)):
         tif_path = dem_directory / f"{tile}.tif"
         if tif_path.exists():
-            existing.append(tile)
-            continue
+            if not force_existing:
+                existing.append(tile)
+                continue
+            try:
+                tif_path.unlink()
+            except OSError:
+                failed.append(tile)
+                continue
+        gz_path = dem_directory / f"{tile}.hgt.gz"
+        if force_existing and gz_path.exists():
+            try:
+                gz_path.unlink()
+            except OSError:
+                failed.append(tile)
+                continue
         try:
             if get_settings().dem_source == "copernicus":
                 try:

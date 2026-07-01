@@ -1,0 +1,13 @@
+﻿diff --git a/docs/USER_GUIDE.md b/docs/USER_GUIDE.md
+index 2d91d22..17a3c33 100644
+--- a/docs/USER_GUIDE.md
++++ b/docs/USER_GUIDE.md
+@@ -97,7 +97,7 @@ site_code,latitude,longitude
+ Cot khuyen nghi:
+ 
+ ```text
+-site_code,site_name,latitude,longitude,tower_height_m,available_height_m,status,owner,region,overload,VH
++site_code,site_name,latitude,longitude,tower_height_m,available_height_m,status,owner,region,overload,VH,cells_4g,cells_5g
+ ```
+ 
+ Ghi chu:

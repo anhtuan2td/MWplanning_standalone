@@ -1,0 +1,84 @@
+﻿diff --git a/backend/app/api/routes.py b/backend/app/api/routes.py
+index c4e57b9..06eed83 100644
+--- a/backend/app/api/routes.py
++++ b/backend/app/api/routes.py
+@@ -1,3 +1,4 @@
++import asyncio
+ import os
+ import csv
+ from threading import Timer
+@@ -28,6 +29,7 @@ from app.services.mw_links import antenna_rule_table, import_existing_links_csv
+ from app.services.sites import import_sites_csv, list_sites, search_sites
+ from app.services.status import get_system_status
+ from app.services.equipment import import_equipment_profiles, list_equipment_profiles
++from app.services.gis_preflight import repair_gis_coverage
+ from app.terrain.downloader import download_central_region_gis_tiles, download_dem_tiles
+ from app.terrain.grid import generate_grid
+ from app.terrain.profile import generate_profile
+@@ -154,9 +156,26 @@ async def single_link_plan(
+ @router.post("/plan/batch", response_model=BatchPlanResult)
+ async def batch_plan(request_body: BatchPlanRequest, http_request: Request, db: Session = Depends(get_db)) -> BatchPlanResult:
+     results = []
+-    for site in request_body.sites:
++    for site_index, site in enumerate(request_body.sites):
+         if await http_request.is_disconnected():
+             break
++        gis_result = await asyncio.to_thread(repair_gis_coverage, site)
++        if gis_result and gis_result.blocks_planning:
++            results.append(
++                BatchSiteResult(
++                    site_name=site.site_name,
++                    candidates=[],
++                    error=gis_result.error_message,
++                    gis_status=gis_result.status,
++                    dem_tiles=gis_result.dem_tiles,
++                    missing_dem_tiles=gis_result.missing_dem_tiles,
++                    missing_worldcover_tiles=gis_result.missing_worldcover_tiles,
++                    bad_dem_tiles=gis_result.bad_dem_tiles,
++                    suspect_dem_tiles=gis_result.suspect_dem_tiles,
++                    unknown_dem_tiles=gis_result.unknown_dem_tiles,
++                )
++            )
++            continue
+         try:
+             plan = await plan_single_link_cancellable(db, site, http_request.is_disconnected)
+             if plan.candidate_links:
+@@ -184,7 +203,9 @@ async def batch_plan(request_body: BatchPlanRequest, http_request: Request, db:
+                     rain_zone=item.link.rain_zone,
+                     fade_margin_db=item.link.fade_margin_db,
+                     equipment_profile=item.link.equipment_profile,
+-                    risk_flags=item.link.risk_flags + ([note] if note else []),
++                    risk_flags=item.link.risk_flags
++                    + (gis_result.warning_flags if gis_result else [])
++                    + ([note] if note else []),
+                     calloff=item.calloff,
+                 )
+                 for index, item in enumerate(batch_links[: request_body.top_n], 1)
+@@ -194,6 +215,13 @@ async def batch_plan(request_body: BatchPlanRequest, http_request: Request, db:
+                     site_name=site.site_name,
+                     candidates=candidates,
+                     error=None if candidates else "Không tìm thấy candidate trong bán kính quét.",
++                    gis_status=gis_result.status if gis_result else None,
++                    dem_tiles=gis_result.dem_tiles if gis_result else [],
++                    missing_dem_tiles=gis_result.missing_dem_tiles if gis_result else [],
++                    missing_worldcover_tiles=gis_result.missing_worldcover_tiles if gis_result else [],
++                    bad_dem_tiles=gis_result.bad_dem_tiles if gis_result else [],
++                    suspect_dem_tiles=gis_result.suspect_dem_tiles if gis_result else [],
++                    unknown_dem_tiles=gis_result.unknown_dem_tiles if gis_result else [],
+                 )
+             )
+         except Exception as exc:
+@@ -202,6 +230,13 @@ async def batch_plan(request_body: BatchPlanRequest, http_request: Request, db:
+                     site_name=site.site_name,
+                     candidates=[],
+                     error=str(exc),
++                    gis_status=gis_result.status if gis_result else None,
++                    dem_tiles=gis_result.dem_tiles if gis_result else [],
++                    missing_dem_tiles=gis_result.missing_dem_tiles if gis_result else [],
++                    missing_worldcover_tiles=gis_result.missing_worldcover_tiles if gis_result else [],
++                    bad_dem_tiles=gis_result.bad_dem_tiles if gis_result else [],
++                    suspect_dem_tiles=gis_result.suspect_dem_tiles if gis_result else [],
++                    unknown_dem_tiles=gis_result.unknown_dem_tiles if gis_result else [],
+                 )
+             )
+     return BatchPlanResult(results=results)

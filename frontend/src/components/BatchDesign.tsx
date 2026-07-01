@@ -5,9 +5,9 @@ import {
   fetchEquipmentProfiles,
   planBatch,
   type AcceptedFilters,
+  type BatchPlanSite,
   type BatchPlanResult,
   type EquipmentProfile,
-  type PlanRequest,
 } from "../api";
 
 type Props = { onClose: () => void };
@@ -25,12 +25,88 @@ const HEADER_ALIASES: Record<string, string[]> = {
   longitude: ["longitude", "long", "lon", "lng", "kinh_do", "kinh độ", "kinhdo"],
 };
 
+const OPTIONAL_HEADER_ALIASES: Record<string, string[]> = {
+  tower_height_m: [
+    "tower_height_m",
+    "tower_height",
+    "height",
+    "tower",
+    "anten_height",
+    "antenna_height",
+    "new_site_height_m",
+    "cao",
+    "cot",
+    "cao_do",
+    "cao do",
+    "do_cao",
+    "do cao",
+    "cao_anten",
+    "cao anten",
+  ],
+  radius_km: [
+    "radius_km",
+    "radius",
+    "max_radius_km",
+    "max_radius",
+    "scan_radius",
+    "search_radius",
+    "ban_kinh",
+    "ban kinh",
+    "bankinh",
+  ],
+  min_radius_km: [
+    "min_radius_km",
+    "min_radius",
+    "min_distance_km",
+    "min_distance",
+    "ban_kinh_min",
+    "ban kinh min",
+    "bankinhmin",
+  ],
+  band: ["band", "freq", "frequency", "tan_so", "tan so"],
+  rain_zone: ["rain_zone", "rainzone", "itu_rain_zone"],
+  antenna_diameter_m: ["antenna_diameter_m", "antenna_diameter", "diameter", "duong_kinh_anten", "duong kinh anten"],
+  equipment_profile: ["equipment_profile", "profile", "equipment", "thiet_bi", "thiet bi"],
+};
+
+const ALL_HEADER_ALIASES: Record<string, string[]> = { ...HEADER_ALIASES, ...OPTIONAL_HEADER_ALIASES };
+
 function delimiterFor(line: string): "," | ";" {
   return line.split(";").length > line.split(",").length ? ";" : ",";
 }
 
+function normalizeHeader(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/đ/g, "d")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
 function headerIndex(headers: string[], field: keyof typeof HEADER_ALIASES): number {
-  return headers.findIndex((header) => HEADER_ALIASES[field].includes(header));
+  const aliases = HEADER_ALIASES[field].map(normalizeHeader);
+  return headers.findIndex((header) => aliases.includes(header));
+}
+
+function rowValue(row: Record<string, string>, field: string): string | undefined {
+  for (const alias of ALL_HEADER_ALIASES[field] ?? [field]) {
+    const value = row[normalizeHeader(alias)];
+    if (value) return value;
+  }
+  return undefined;
+}
+
+function rowNumber(row: Record<string, string>, field: string, lineNumber: number): number | undefined {
+  const value = rowValue(row, field);
+  if (!value) return undefined;
+  const numeric = Number(value.replace(",", "."));
+  if (!Number.isFinite(numeric)) {
+    throw new Error(`Gia tri ${field} khong hop le o dong ${lineNumber}`);
+  }
+  return numeric;
 }
 
 function csvCell(value: string | number): string {
@@ -38,12 +114,12 @@ function csvCell(value: string | number): string {
   return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
-function parseCsv(text: string): PlanRequest[] {
+function parseCsv(text: string): BatchPlanSite[] {
   const lines = text.replace(/^\uFEFF/, "").split(/\r?\n/).filter((line) => line.trim());
   if (lines.length < 2) throw new Error("CSV cần có header và ít nhất một trạm.");
 
   const delimiter = delimiterFor(lines[0]);
-  const headers = lines[0].split(delimiter).map((value) => value.trim().toLowerCase());
+  const headers = lines[0].split(delimiter).map(normalizeHeader);
   const siteIndex = headerIndex(headers, "site_name");
   const latIndex = headerIndex(headers, "latitude");
   const lonIndex = headerIndex(headers, "longitude");
@@ -60,23 +136,29 @@ function parseCsv(text: string): PlanRequest[] {
     if (!siteName || !Number.isFinite(latitude) || !Number.isFinite(longitude)) {
       throw new Error(`Dữ liệu không hợp lệ ở dòng ${index + 2}`);
     }
-    return {
+    const lineNumber = index + 2;
+    const site: BatchPlanSite = {
       site_name: siteName,
       latitude,
       longitude,
-      tower_height_m: Number(row.tower_height_m || 30),
-      radius_km: Number(row.radius_km || 30),
-      min_radius_km: row.min_radius_km ? Number(row.min_radius_km) : undefined,
-      band: row.band || "AUTO",
-      rain_zone: row.rain_zone || undefined,
-      antenna_diameter_m: row.antenna_diameter_m ? Number(row.antenna_diameter_m) : undefined,
-      equipment_profile: row.equipment_profile || undefined,
-    } as PlanRequest;
+    };
+    const towerHeight = rowNumber(row, "tower_height_m", lineNumber);
+    const radius = rowNumber(row, "radius_km", lineNumber);
+    const minRadius = rowNumber(row, "min_radius_km", lineNumber);
+    const antennaDiameter = rowNumber(row, "antenna_diameter_m", lineNumber);
+    if (towerHeight !== undefined) site.tower_height_m = towerHeight;
+    if (radius !== undefined) site.radius_km = radius;
+    if (minRadius !== undefined) site.min_radius_km = minRadius;
+    if (antennaDiameter !== undefined) site.antenna_diameter_m = antennaDiameter;
+    site.band = rowValue(row, "band") || "AUTO";
+    site.rain_zone = rowValue(row, "rain_zone");
+    site.equipment_profile = rowValue(row, "equipment_profile");
+    return site;
   });
 }
 
 export function BatchDesign({ onClose }: Props) {
-  const [sites, setSites] = useState<PlanRequest[]>([]);
+  const [sites, setSites] = useState<BatchPlanSite[]>([]);
   const [result, setResult] = useState<BatchPlanResult | null>(null);
   const [topN, setTopN] = useState(3);
   const [busy, setBusy] = useState(false);
@@ -94,7 +176,20 @@ export function BatchDesign({ onClose }: Props) {
   }, []);
 
   const rows = useMemo(
-    () => result?.results.flatMap((site) => site.candidates.map((candidate) => ({ input: site.site_name, ...candidate }))) ?? [],
+    () =>
+      result?.results.flatMap((site) =>
+        site.candidates.map((candidate) => ({
+          input: site.site_name,
+          gis_status: site.gis_status ?? "",
+          dem_tiles: site.dem_tiles ?? [],
+          missing_dem_tiles: site.missing_dem_tiles ?? [],
+          missing_worldcover_tiles: site.missing_worldcover_tiles ?? [],
+          bad_dem_tiles: site.bad_dem_tiles ?? [],
+          suspect_dem_tiles: site.suspect_dem_tiles ?? [],
+          unknown_dem_tiles: site.unknown_dem_tiles ?? [],
+          ...candidate,
+        }))
+      ) ?? [],
     [result]
   );
   const errorRows = useMemo(() => result?.results.filter((site) => site.error) ?? [], [result]);
@@ -188,6 +283,14 @@ export function BatchDesign({ onClose }: Props) {
       "equipment_profile",
       "score",
       "status",
+      "gis_status",
+      "dem_tiles",
+      "missing_dem_tiles",
+      "missing_worldcover_tiles",
+      "bad_dem_tiles",
+      "suspect_dem_tiles",
+      "unknown_dem_tiles",
+      "error",
       "calloff_line",
       "frequency",
       "new_site_frequency",
@@ -217,6 +320,14 @@ export function BatchDesign({ onClose }: Props) {
         r.equipment_profile,
         r.score,
         r.status,
+        r.gis_status,
+        r.dem_tiles.join("|"),
+        r.missing_dem_tiles.join("|"),
+        r.missing_worldcover_tiles.join("|"),
+        r.bad_dem_tiles.join("|"),
+        r.suspect_dem_tiles.join("|"),
+        r.unknown_dem_tiles.join("|"),
+        "",
         r.calloff?.line ?? "",
         r.calloff?.frequency ?? "",
         r.calloff?.new_site_frequency ?? "",
@@ -234,7 +345,48 @@ export function BatchDesign({ onClose }: Props) {
         r.risk_flags.join("|"),
       ].map(csvCell).join(",")
     );
-    const url = URL.createObjectURL(new Blob([[header, ...lines].join("\n")], { type: "text/csv" }));
+    const errorLines =
+      result?.results
+        .filter((site) => !site.candidates.length && site.error)
+        .map((site) =>
+          [
+            site.site_name,
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            site.gis_status ?? "",
+            (site.dem_tiles ?? []).join("|"),
+            (site.missing_dem_tiles ?? []).join("|"),
+            (site.missing_worldcover_tiles ?? []).join("|"),
+            (site.bad_dem_tiles ?? []).join("|"),
+            (site.suspect_dem_tiles ?? []).join("|"),
+            (site.unknown_dem_tiles ?? []).join("|"),
+            site.error ?? "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+          ].map(csvCell).join(",")
+        ) ?? [];
+    const url = URL.createObjectURL(new Blob([[header, ...lines, ...errorLines].join("\n")], { type: "text/csv" }));
     const a = document.createElement("a");
     a.href = url;
     a.download = "batch_candidates.csv";
@@ -352,6 +504,10 @@ export function BatchDesign({ onClose }: Props) {
           {errorRows.map((site) => (
             <p key={site.site_name}>
               <strong>{site.site_name}</strong>: {site.error}
+              {site.gis_status ? ` | ${site.gis_status}` : ""}
+              {site.bad_dem_tiles?.length ? ` | BAD DEM: ${site.bad_dem_tiles.join(", ")}` : ""}
+              {site.suspect_dem_tiles?.length ? ` | SUSPECT DEM: ${site.suspect_dem_tiles.join(", ")}` : ""}
+              {site.unknown_dem_tiles?.length ? ` | UNKNOWN DEM: ${site.unknown_dem_tiles.join(", ")}` : ""}
             </p>
           ))}
         </section>
@@ -372,6 +528,8 @@ export function BatchDesign({ onClose }: Props) {
               <th>Thiết bị</th>
               <th>Score</th>
               <th>Status</th>
+              <th>GIS</th>
+              <th>DEM warning</th>
               <th>Ghi chú</th>
             </tr>
           </thead>
@@ -389,6 +547,15 @@ export function BatchDesign({ onClose }: Props) {
                 <td>{row.equipment_profile}</td>
                 <td>{row.score.toFixed(1)}</td>
                 <td>{row.status}</td>
+                <td>{row.gis_status || "-"}</td>
+                <td>
+                  {[
+                    row.bad_dem_tiles.length ? `BAD ${row.bad_dem_tiles.join("|")}` : "",
+                    row.suspect_dem_tiles.length ? `SUSPECT ${row.suspect_dem_tiles.join("|")}` : "",
+                    row.unknown_dem_tiles.length ? `UNKNOWN ${row.unknown_dem_tiles.join("|")}` : "",
+                    row.missing_dem_tiles.length ? `MISSING ${row.missing_dem_tiles.join("|")}` : "",
+                  ].filter(Boolean).join(", ") || "-"}
+                </td>
                 <td>{row.risk_flags.join(", ") || "-"}</td>
               </tr>
             ))}

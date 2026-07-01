@@ -1,0 +1,2 @@
+.\.venv\Scripts\python.exe -m pip install -r requirements-chat.txt
+.\.venv\Scripts\python.exe -m py_compile scripts\telegram_bot.py scripts\netchat_bot.py backend\app\services\site_lookup.py

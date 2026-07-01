@@ -1,0 +1,261 @@
+diff --git a/frontend/src/App.tsx b/frontend/src/App.tsx
+index c38b546..7f4522c 100644
+--- a/frontend/src/App.tsx
++++ b/frontend/src/App.tsx
+@@ -17,11 +17,14 @@ import {
+   fetchSystemStatus,
+   importMwLinks,
+   importSites,
++  importEquipment,
++  fetchEquipmentProfiles,
+   planSingleLink,
+   shutdownApp,
+-  type PlanRequest
++  type AcceptedFilters, type PlanRequest, type EquipmentProfile
+ } from "./api";
+ import type { CalloffRules, CandidateLink, PlanResult, SystemStatus } from "./types";
++import { BatchDesign } from "./components/BatchDesign";
+ 
+ const CandidateMap = lazy(() => import("./components/CandidateMap").then((module) => ({ default: module.CandidateMap })));
+ const TerrainChart = lazy(() => import("./components/TerrainChart").then((module) => ({ default: module.TerrainChart })));
+@@ -32,7 +35,14 @@ const initialForm: PlanRequest = {
+   longitude: 108.221,
+   tower_height_m: 30,
+   radius_km: 30,
+-  band: "AUTO"
++  min_radius_km: 0,
++  band: "AUTO",
++  accepted_filters: {
++    reject_site_code_contains: "-",
++    min_site_code_number: null,
++    reject_overload: true,
++    reject_overlink: true
++  }
+ };
+ 
+ type ChatMessage = {
+@@ -71,6 +81,16 @@ function formatCandidate(row: CandidateLink) {
+   return `${row.candidate.site_code}: ${row.link.distance_km.toFixed(2)} km, ${row.link.band}, score ${row.link.score.toFixed(1)}, ${row.link.status}`;
+ }
+ 
++function updateAcceptedFilters(form: PlanRequest, patch: Partial<AcceptedFilters>): PlanRequest {
++  const current = form.accepted_filters ?? {
++    reject_site_code_contains: null,
++    min_site_code_number: null,
++    reject_overload: false,
++    reject_overlink: false
++  };
++  return { ...form, accepted_filters: { ...current, ...patch } };
++}
++
+ function tileName(latFloor: number, lonFloor: number) {
+   const ns = latFloor >= 0 ? "N" : "S";
+   const ew = lonFloor >= 0 ? "E" : "W";
+@@ -142,7 +162,21 @@ function parseChatPlan(text: string, current: PlanRequest): { nextForm: PlanRequ
+     }
+   }
+ 
+-  const radiusMatch = text.match(/(?:radius|b[aá]n k[ií]nh|r)\s*[:=]?\s*(\d+(?:\.\d+)?)\s*(?:km)?/i);
++  const minRadiusMatch = text.match(/(?:min(?:imum)?\s+radius|min(?:imum)?\s+r|b[aá]n k[ií]nh\s+t[oô]i\s+thi[eê]u)\s*[:=]?\s*(\d+(?:\.\d+)?)\s*(?:km)?/i);
++  if (minRadiusMatch) {
++    nextForm.min_radius_km = Number(minRadiusMatch[1]);
++    changed.push(`bán kính tối thiểu ${nextForm.min_radius_km} km`);
++  }
++
++  const radiusPattern = /(?:max(?:imum)?\s*)?(?:radius|b[aá]n k[ií]nh|r)\s*[:=]?\s*(\d+(?:\.\d+)?)\s*(?:km)?/gi;
++  let radiusMatch: RegExpExecArray | null = null;
++  let candidateRadiusMatch: RegExpExecArray | null = null;
++  while ((candidateRadiusMatch = radiusPattern.exec(text)) !== null) {
++    const prefix = text.slice(0, candidateRadiusMatch.index).toLowerCase();
++    if (!/(?:min(?:imum)?\s*)$/.test(prefix)) {
++      radiusMatch = candidateRadiusMatch;
++    }
++  }
+   if (radiusMatch) {
+     nextForm.radius_km = Number(radiusMatch[1]);
+     changed.push(`bán kính ${nextForm.radius_km} km`);
+@@ -180,6 +214,7 @@ function isHelpIntent(text: string) {
+ }
+ 
+ export default function App() {
++  const [batchMode, setBatchModeState] = useState(() => window.location.hash === "#batch" || localStorage.getItem("mw_batch_mode") === "1");
+   const [form, setForm] = useState<PlanRequest>(initialForm);
+   const [result, setResult] = useState<PlanResult | null>(null);
+   const [selected, setSelected] = useState<CandidateLink | null>(null);
+@@ -190,6 +225,7 @@ export default function App() {
+   const [showExports, setShowExports] = useState(false);
+   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
+   const [calloffRules, setCalloffRules] = useState<CalloffRules | null>(null);
++  const [equipmentProfiles, setEquipmentProfiles] = useState<EquipmentProfile[]>([]);
+   const [chatInput, setChatInput] = useState("");
+   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
+     {
+@@ -201,6 +237,16 @@ export default function App() {
+   const chatEndRef = useRef<HTMLDivElement | null>(null);
+   const planningAbortRef = useRef<AbortController | null>(null);
+ 
++  function setBatchMode(value: boolean) {
++    setBatchModeState(value);
++    localStorage.setItem("mw_batch_mode", value ? "1" : "0");
++    if (value) {
++      window.history.replaceState(null, "", "#batch");
++    } else if (window.location.hash === "#batch") {
++      window.history.replaceState(null, "", window.location.pathname + window.location.search);
++    }
++  }
++
+   const rows = useMemo(() => {
+     if (!result) return [];
+     return [...result.candidate_links, ...result.rejected_links];
+@@ -237,6 +283,7 @@ export default function App() {
+   useEffect(() => {
+     refreshSystemStatus();
+     fetchCalloffRules().then(setCalloffRules).catch(() => setCalloffRules(null));
++    fetchEquipmentProfiles().then(setEquipmentProfiles).catch(() => setEquipmentProfiles([]));
+   }, []);
+ 
+   async function refreshWorkspace(announce = true) {
+@@ -262,6 +309,12 @@ export default function App() {
+     }
+   }
+ 
++  async function onEquipmentUpload(file?: File) {
++    if (!file) return;
++    try { const imported = await importEquipment(file); setEquipmentProfiles(await fetchEquipmentProfiles()); setMessage(`Equipment: imported ${imported.imported}, total ${imported.total}.`); }
++    catch (error) { setMessage(displayError(error, "Equipment import failed")); }
++  }
++
+   async function exitApp() {
+     const confirmed = window.confirm("Shutdown MW Pre-planning Lite?");
+     if (!confirmed) return;
+@@ -432,7 +485,7 @@ export default function App() {
+ 
+   function exportCsv() {
+     if (!result) return;
+-    const header = ["rank", "site_code", "distance_km", "los", "fresnel_percent", "score", "status", "risk_flags"];
++    const header = ["rank", "site_code", "distance_km", "los", "fresnel_percent", "availability_percent", "rain_zone", "score", "status", "risk_flags"];
+     const lines = rows.map((row) =>
+       [
+         row.rank ?? "",
+@@ -440,6 +493,8 @@ export default function App() {
+         row.link.distance_km,
+         row.link.los_pass ? "PASS" : "FAIL",
+         row.link.fresnel_clearance_percent,
++        row.link.availability_percent,
++        row.link.rain_zone,
+         row.link.score,
+         row.link.status,
+         row.link.risk_flags.join("|")
+@@ -554,6 +609,8 @@ export default function App() {
+     pushMessage("assistant", "Tôi chưa hiểu lệnh này. Gõ help để xem mẫu câu.");
+   }
+ 
++  if (batchMode) return <BatchDesign onClose={() => setBatchMode(false)} />;
++
+   return (
+     <main className="chatShell">
+       <section className="chatPanel">
+@@ -593,6 +650,7 @@ export default function App() {
+         </form>
+ 
+         <div className="quickActions">
++          <button type="button" onClick={() => setBatchMode(true)}>Design theo lô</button>
+           <button onClick={() => runPlan(form)} disabled={busy}>
+             <RadioTower size={18} />
+             Run
+@@ -636,6 +694,12 @@ export default function App() {
+                 <input type="number" value={form.longitude} onChange={(e) => setForm({ ...form, longitude: Number(e.target.value) })} />
+               </label>
+             </div>
++            <label>
++              Equipment profile
++              <select value={form.equipment_profile ?? "RACOM_RAy3_24_56_256QAM"} onChange={(e) => setForm({ ...form, equipment_profile: e.target.value })}>
++                {equipmentProfiles.map((profile) => <option key={profile.profile_id} value={profile.profile_id}>{profile.vendor} {profile.model} · {profile.band_ghz}GHz/{profile.channel_bw_mhz}MHz · {profile.modulation}</option>)}
++              </select>
++            </label>
+             <div className="grid2">
+               <label>
+                 Tower m
+@@ -646,6 +710,54 @@ export default function App() {
+                 <input type="number" value={form.radius_km} onChange={(e) => setForm({ ...form, radius_km: Number(e.target.value) })} />
+               </label>
+             </div>
++            <div className="grid2">
++              <label>
++                Min radius km
++                <input type="number" value={form.min_radius_km ?? 0} onChange={(e) => setForm({ ...form, min_radius_km: Number(e.target.value) })} />
++              </label>
++              <div />
++            </div>
++            <div className="filterPanel">
++              <span>Accepted filters</span>
++              <label className="checkRow">
++                <input
++                  type="checkbox"
++                  checked={form.accepted_filters?.reject_site_code_contains === "-"}
++                  onChange={(e) => setForm(updateAcceptedFilters(form, { reject_site_code_contains: e.target.checked ? "-" : null }))}
++                />
++                Loại site code có dấu -
++              </label>
++              <label className="checkRow">
++                <input
++                  type="checkbox"
++                  checked={Boolean(form.accepted_filters?.reject_overload)}
++                  onChange={(e) => setForm(updateAcceptedFilters(form, { reject_overload: e.target.checked }))}
++                />
++                Loại overload
++              </label>
++              <label className="checkRow">
++                <input
++                  type="checkbox"
++                  checked={Boolean(form.accepted_filters?.reject_overlink)}
++                  onChange={(e) => setForm(updateAcceptedFilters(form, { reject_overlink: e.target.checked }))}
++                />
++                Loại overlink
++              </label>
++              <label className="checkRow thresholdRow">
++                <input
++                  type="checkbox"
++                  checked={form.accepted_filters?.min_site_code_number != null}
++                  onChange={(e) => setForm(updateAcceptedFilters(form, { min_site_code_number: e.target.checked ? 0 : null }))}
++                />
++                Site code number &gt;
++                <input
++                  type="number"
++                  disabled={form.accepted_filters?.min_site_code_number == null}
++                  value={form.accepted_filters?.min_site_code_number ?? ""}
++                  onChange={(e) => setForm(updateAcceptedFilters(form, { min_site_code_number: e.target.value === "" ? null : Number(e.target.value) }))}
++                />
++              </label>
++            </div>
+           </div>
+         )}
+ 
+@@ -655,6 +767,11 @@ export default function App() {
+             Site CSV
+             <input type="file" accept=".csv" onChange={(e) => onCsvUpload(e.target.files?.[0])} />
+           </label>
++          <label className="upload">
++            <Upload size={18} />
++            Equipment CSV
++            <input type="file" accept=".csv" onChange={(e) => onEquipmentUpload(e.target.files?.[0])} />
++          </label>
+           <label className="upload">
+             <Upload size={18} />
+             MW links
+@@ -728,6 +845,7 @@ export default function App() {
+                   <th>LOS</th>
+                   <th>Fresnel</th>
+                   <th>Band</th>
++                  <th>Availability</th>
+                   <th>Score</th>
+                   <th>Status</th>
+                   <th>Notes</th>
+@@ -743,6 +861,7 @@ export default function App() {
+                     <td>{row.link.los_pass ? "PASS" : "FAIL"}</td>
+                     <td>{row.link.fresnel_clearance_percent.toFixed(1)}%</td>
+                     <td>{row.link.band}</td>
++                    <td>{row.link.availability_percent.toFixed(5)}% ({row.link.rain_zone})</td>
+                     <td>{row.link.score.toFixed(1)}</td>
+                     <td><span className={`pill ${row.link.status.toLowerCase()}`}>{row.link.status}</span></td>
+                     <td>{row.link.risk_flags.join(", ") || "-"}</td>

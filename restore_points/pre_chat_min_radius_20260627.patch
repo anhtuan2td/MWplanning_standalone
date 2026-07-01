@@ -1,0 +1,102 @@
+﻿diff --git a/scripts/netchat_bot.py b/scripts/netchat_bot.py
+index 4c556e6..50f0a6b 100644
+--- a/scripts/netchat_bot.py
++++ b/scripts/netchat_bot.py
+@@ -32,16 +32,19 @@ from scripts.netchat_send import (  # noqa: E402
+     netchat_ssl_verify,
+     required_env,
+ )
+-from scripts.telegram_bot import ensure_gis, format_result, parse_plan  # noqa: E402
++from scripts.telegram_bot import ensure_gis, format_result, parse_plan, parse_site_lookup  # noqa: E402
++from app.database.session import SessionLocal  # noqa: E402
++from app.services.site_lookup import site_lookup  # noqa: E402
+ 
+ 
+ HELP_TEXT = """MW Pre-planning NetChat
+ 
+-Lenh:
++Lệnh:
+ /plan site DN001 16.032 108.221 radius 30 height 30
+ /status
++/site DN001
+ 
+-Bot se tu kiem tra GIS. Neu thieu DEM/WorldCover, bot tai GIS truoc roi moi chay planning.
++Bot sẽ tự kiểm tra GIS. Nếu thiếu DEM/WorldCover, bot tải GIS trước rồi mới chạy planning.
+ """
+ 
+ 
+@@ -138,10 +141,16 @@ class NetChatBot:
+                 root_id=root_id,
+             )
+             return
++        lookup_code = parse_site_lookup(message)
++        if lookup_code:
++            with SessionLocal() as db:
++                reply = site_lookup(db, lookup_code)
++            await self.send_chunks(session, channel_id, reply, root_id=root_id)
++            return
+         if message.startswith("/plan") or "plan" in message.lower() or "site" in message.lower() or "quy hoạch" in message.lower():
+             request = parse_plan(message)
+             if request is None:
+-                await self.send_chunks(session, channel_id, "Sai cu phap. Vi du: /plan site DN001 16.032 108.221 radius 30 height 30", root_id=root_id)
++                await self.send_chunks(session, channel_id, "Sai cú pháp. Ví dụ: /plan site DN001 16.032 108.221 radius 30 height 30", root_id=root_id)
+                 return
+             await self.send_chunks(session, channel_id, f"Checking GIS for {request.site_name}...", root_id=root_id)
+             try:
+diff --git a/scripts/telegram_bot.py b/scripts/telegram_bot.py
+index d600c66..afe2ad3 100644
+--- a/scripts/telegram_bot.py
++++ b/scripts/telegram_bot.py
+@@ -22,6 +22,7 @@ from app.schemas.planning import SingleLinkPlanRequest  # noqa: E402
+ from app.services.planner import plan_single_link  # noqa: E402
+ from app.terrain.downloader import download_gis_tiles, tiles_for_radius  # noqa: E402
+ from app.core.config import get_settings  # noqa: E402
++from app.services.site_lookup import site_lookup  # noqa: E402
+ 
+ 
+ TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
+@@ -30,6 +31,7 @@ HELP_TEXT = """MW Pre-planning Telegram
+ Lệnh:
+ /plan site DN001 16.032 108.221 radius 30 height 30
+ /status
++/site DN001
+ 
+ Bot sẽ tự kiểm tra GIS. Nếu thiếu DEM/WorldCover, bot tải GIS trước rồi mới chạy planning.
+ """
+@@ -93,6 +95,24 @@ def parse_plan(text: str) -> SingleLinkPlanRequest | None:
+     )
+ 
+ 
++def parse_site_lookup(text: str) -> str | None:
++    command = re.search(r"^/(?:site|lookup|tram)\s+([A-Za-z][A-Za-z0-9_-]{2,})\s*$", text, re.IGNORECASE)
++    if command:
++        return command.group(1).upper()
++    direct_code = re.search(r"^\s*([A-Za-z]{2,}[A-Za-z0-9_-]*\d[A-Za-z0-9_-]*)\s*$", text)
++    if direct_code:
++        return direct_code.group(1).upper()
++    if re.search(
++        r"tra\s*cứu|tra\s*cuu|thông\s*tin|thong\s*tin|trạm|tram|tuyến\s*mw|tuyen\s*mw|cell|vu\s*hồi|vu\s*hoi|overload",
++        text,
++        re.IGNORECASE,
++    ):
++        code = re.search(r"\b([A-Za-z]{2,}[A-Za-z0-9_-]*\d[A-Za-z0-9_-]*)\b", text)
++        if code:
++            return code.group(1).upper()
++    return None
++
++
+ def ensure_gis(request: SingleLinkPlanRequest) -> str:
+     settings = get_settings()
+     dem_missing = [
+@@ -189,6 +209,11 @@ class TelegramBot:
+                 f"DB: {os.environ['MW_DATABASE_URL']}\nDEM: {settings.dem_directory}\nWorldCover: {settings.worldcover_directory}",
+             )
+             return
++        lookup_code = parse_site_lookup(text)
++        if lookup_code:
++            with SessionLocal() as db:
++                await self.send_message(chat_id, site_lookup(db, lookup_code))
++            return
+         if text.startswith("/plan") or re.search(r"(quy hoach|quy hoạch|plan|site)", text, re.IGNORECASE):
+             request = parse_plan(text)
+             if request is None:

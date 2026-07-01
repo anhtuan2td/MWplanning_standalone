@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Awaitable, Callable
 from time import perf_counter
 from math import atan2, degrees
@@ -336,79 +337,11 @@ def check_link(request: LinkCheckRequest) -> LinkCheckResult:
     )
 
 
-def plan_single_link(db: Session, request: SingleLinkPlanRequest) -> SingleLinkPlanResult:
-    started_at = perf_counter()
-    config = get_planner_config()
-    acceptance_config = {**config, "accepted_filters": request.accepted_filters or config.get("accepted_filters", {})}
-    radius = request.radius_km or float(config.get("candidate_radius_km", 30))
-    candidates = _radius_scan_candidates(db, request, radius)
-    sampler = DemSampler()
-    sample_elevation = sampler.sample_surface if get_settings().worldcover_apply_height_offsets else sampler.sample
-    new_site = Endpoint(
-        latitude=request.latitude,
-        longitude=request.longitude,
-        ground_elevation_m=sample_elevation(request.latitude, request.longitude, fallback_m=0),
-        tower_height_m=request.tower_height_m,
-    )
-
-    accepted: list[CandidateLink] = []
-    rejected: list[CandidateLink] = []
-    processed = 0
-    for ring in _candidate_scan_rings(candidates, radius):
-        ring_accepted = 0
-        for candidate in ring:
-            root_azimuth = bearing_deg(candidate.latitude, candidate.longitude, new_site.latitude, new_site.longitude)
-            distance_km = haversine_km(new_site.latitude, new_site.longitude, candidate.latitude, candidate.longitude)
-            band = request.band if request.band and request.band != "AUTO" else _auto_band(distance_km)
-            root_height = _effective_root_height(db, candidate, band, root_azimuth, candidate.available_height_m)
-            candidate_endpoint = Endpoint(
-                latitude=candidate.latitude,
-                longitude=candidate.longitude,
-                ground_elevation_m=candidate.ground_elevation_m,
-                tower_height_m=root_height,
-            )
-            diameter = request.antenna_diameter_m or suggested_antenna_diameter(band, distance_km)
-            link = check_link(LinkCheckRequest(a=new_site, b=candidate_endpoint, band=band, rain_zone=request.rain_zone, antenna_diameter_m=diameter, equipment_profile=request.equipment_profile))
-            item = CandidateLink(
-                candidate=candidate,
-                link=link,
-                calloff=_calloff(db, request.site_name, new_site, candidate, link.band, request.tower_height_m, root_height, link.distance_km),
-            )
-            if item.calloff:
-                _apply_calloff_conflict(link, item.calloff)
-            candidate_links = links_for_site(candidate.site_code)
-            _apply_operational_rules(link, candidate, len(candidate_links), config)
-            _apply_acceptance_filters(link, candidate, len(candidate_links), acceptance_config)
-            if link.status == "REJECTED":
-                rejected.append(item)
-            else:
-                accepted.append(item)
-                ring_accepted += 1
-            processed += 1
-        if ring_accepted:
-            break
-
-    accepted.sort(key=lambda item: item.link.score, reverse=True)
-    for rank, item in enumerate(accepted, start=1):
-        item.rank = rank
-
-    elapsed = round(perf_counter() - started_at, 3)
-    return SingleLinkPlanResult(
-        best_candidate=accepted[0] if accepted else None,
-        candidate_links=accepted,
-        rejected_links=rejected,
-        summary=PlanSummary(
-            total_candidates=len(candidates),
-            accepted=len(accepted),
-            rejected=len(rejected),
-            band=None,
-            elapsed_seconds=elapsed,
-            avg_seconds_per_link=round(elapsed / processed, 3) if processed else 0,
-        ),
-    )
+async def _never_cancel() -> bool:
+    return False
 
 
-async def plan_single_link_cancellable(
+async def _plan_single_link_core(
     db: Session,
     request: SingleLinkPlanRequest,
     should_cancel: Callable[[], Awaitable[bool]],
@@ -432,8 +365,10 @@ async def plan_single_link_cancellable(
     processed = 0
     for ring in _candidate_scan_rings(candidates, radius):
         ring_accepted = 0
+        cancelled = False
         for candidate in ring:
             if await should_cancel():
+                cancelled = True
                 break
             root_azimuth = bearing_deg(candidate.latitude, candidate.longitude, new_site.latitude, new_site.longitude)
             distance_km = haversine_km(new_site.latitude, new_site.longitude, candidate.latitude, candidate.longitude)
@@ -463,7 +398,7 @@ async def plan_single_link_cancellable(
                 accepted.append(item)
                 ring_accepted += 1
             processed += 1
-        if ring_accepted or await should_cancel():
+        if ring_accepted or cancelled or await should_cancel():
             break
 
     accepted.sort(key=lambda item: item.link.score, reverse=True)
@@ -484,3 +419,15 @@ async def plan_single_link_cancellable(
             avg_seconds_per_link=round(elapsed / processed, 3) if processed else 0,
         ),
     )
+
+
+def plan_single_link(db: Session, request: SingleLinkPlanRequest) -> SingleLinkPlanResult:
+    return asyncio.run(_plan_single_link_core(db, request, _never_cancel))
+
+
+async def plan_single_link_cancellable(
+    db: Session,
+    request: SingleLinkPlanRequest,
+    should_cancel: Callable[[], Awaitable[bool]],
+) -> SingleLinkPlanResult:
+    return await _plan_single_link_core(db, request, should_cancel)

@@ -1,0 +1,251 @@
+diff --git a/backend/app/api/routes.py b/backend/app/api/routes.py
+index 1c61301..cbb5ed7 100644
+--- a/backend/app/api/routes.py
++++ b/backend/app/api/routes.py
+@@ -1,4 +1,5 @@
+ import os
++import csv
+ from threading import Timer
+ 
+ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+@@ -14,6 +15,7 @@ from app.schemas.planning import (
+     GisDownloadResult,
+     SingleLinkPlanRequest,
+     SingleLinkPlanResult,
++    BatchPlanRequest, BatchPlanResult, BatchSiteResult, BatchCandidate,
+     TerrainProfile,
+     TerrainProfileRequest,
+     TerrainGridRequest,
+@@ -25,7 +27,8 @@ from app.services.planner import check_link, plan_single_link_cancellable
+ from app.services.mw_links import antenna_rule_table, import_existing_links_csv
+ from app.services.sites import import_sites_csv, list_sites, search_sites
+ from app.services.status import get_system_status
+-from app.terrain.downloader import download_dem_tiles
++from app.services.equipment import import_equipment_profiles, list_equipment_profiles
++from app.terrain.downloader import download_central_region_gis_tiles, download_dem_tiles
+ from app.terrain.grid import generate_grid
+ from app.terrain.profile import generate_profile
+ 
+@@ -73,6 +76,19 @@ async def import_mw_links(file: UploadFile = File(...)) -> dict[str, int]:
+     return import_existing_links_csv(await file.read())
+ 
+ 
++@router.get("/equipment/profiles")
++def equipment_profiles() -> list[dict[str, str | float]]:
++    return list_equipment_profiles()
++
++
++@router.post("/equipment/import")
++async def equipment_import(file: UploadFile = File(...)) -> dict[str, int]:
++    try:
++        return import_equipment_profiles(await file.read())
++    except (UnicodeDecodeError, ValueError, csv.Error) as exc:
++        raise HTTPException(status_code=400, detail=str(exc)) from exc
++
++
+ @router.get("/sites", response_model=list[SiteOut])
+ def sites_list(
+     limit: int = Query(500, ge=1, le=5000),
+@@ -116,6 +132,11 @@ def gis_download(request: DemDownloadRequest) -> GisDownloadResult:
+     return download_gis_tiles(request.latitude, request.longitude, request.radius_km)
+ 
+ 
++@router.post("/gis/download/central-region", response_model=GisDownloadResult)
++def gis_download_central_region() -> GisDownloadResult:
++    return download_central_region_gis_tiles()
++
++
+ @router.post("/rf/check-link", response_model=LinkCheckResult)
+ def rf_check_link(request: LinkCheckRequest) -> LinkCheckResult:
+     return check_link(request)
+@@ -128,3 +149,58 @@ async def single_link_plan(
+     db: Session = Depends(get_db),
+ ) -> SingleLinkPlanResult:
+     return await plan_single_link_cancellable(db, request_body, http_request.is_disconnected)
++
++
++@router.post("/plan/batch", response_model=BatchPlanResult)
++async def batch_plan(request_body: BatchPlanRequest, http_request: Request, db: Session = Depends(get_db)) -> BatchPlanResult:
++    results = []
++    for site in request_body.sites:
++        if await http_request.is_disconnected():
++            break
++        try:
++            plan = await plan_single_link_cancellable(db, site, http_request.is_disconnected)
++            if plan.candidate_links:
++                batch_links = plan.candidate_links
++                note = None
++            else:
++                batch_links = sorted(plan.rejected_links, key=lambda item: (-item.link.score, item.link.distance_km))
++                min_radius = max(1.0, site.min_radius_km or 0.0)
++                max_radius = site.radius_km or "mặc định"
++                note = (
++                    f"Không có tuyến đạt sau khi quét {plan.summary.total_candidates} candidate "
++                    f"trong dải bán kính {min_radius:g}-{max_radius} km; đang hiển thị top rejected."
++                    if batch_links
++                    else "Không tìm thấy candidate trong bán kính quét."
++                )
++            candidates = [
++                BatchCandidate(
++                    rank=item.rank or index,
++                    site_code=item.candidate.site_code,
++                    distance_km=item.link.distance_km,
++                    band=item.link.band,
++                    score=item.link.score,
++                    status=item.link.status,
++                    availability_percent=item.link.availability_percent,
++                    rain_zone=item.link.rain_zone,
++                    fade_margin_db=item.link.fade_margin_db,
++                    equipment_profile=item.link.equipment_profile,
++                    risk_flags=item.link.risk_flags + ([note] if note else []),
++                )
++                for index, item in enumerate(batch_links[: request_body.top_n], 1)
++            ]
++            results.append(
++                BatchSiteResult(
++                    site_name=site.site_name,
++                    candidates=candidates,
++                    error=None if candidates else "Không tìm thấy candidate trong bán kính quét.",
++                )
++            )
++        except Exception as exc:
++            results.append(
++                BatchSiteResult(
++                    site_name=site.site_name,
++                    candidates=[],
++                    error=str(exc),
++                )
++            )
++    return BatchPlanResult(results=results)
+diff --git a/backend/app/schemas/planning.py b/backend/app/schemas/planning.py
+index f3455a8..fd0c18a 100644
+--- a/backend/app/schemas/planning.py
++++ b/backend/app/schemas/planning.py
+@@ -47,6 +47,9 @@ class LinkCheckRequest(BaseModel):
+     b: Endpoint
+     band: str = "18GHz"
+     step_m: float | None = None
++    rain_zone: str | None = None
++    antenna_diameter_m: float = Field(default=0.6, gt=0)
++    equipment_profile: str | None = None
+ 
+ 
+ class LinkCheckResult(BaseModel):
+@@ -61,6 +64,17 @@ class LinkCheckResult(BaseModel):
+     status: str
+     risk_flags: list[str] = Field(default_factory=list)
+     terrain_profile: TerrainProfile
++    availability_percent: float = 100
++    rain_zone: str = "N"
++    fade_margin_db: float = 0
++    equipment_profile: str = "SCREENING_FALLBACK"
++
++
++class AcceptedFilters(BaseModel):
++    reject_site_code_contains: str | None = None
++    min_site_code_number: int | None = None
++    reject_overload: bool = False
++    reject_overlink: bool = False
+ 
+ 
+ class CalloffInfo(BaseModel):
+@@ -89,7 +103,44 @@ class SingleLinkPlanRequest(BaseModel):
+     longitude: float
+     tower_height_m: float = 30
+     radius_km: float | None = None
++    min_radius_km: float | None = None
+     band: str = "AUTO"
++    rain_zone: str | None = None
++    antenna_diameter_m: float | None = Field(default=None, gt=0)
++    equipment_profile: str | None = None
++    accepted_filters: AcceptedFilters | None = None
++
++
++class BatchPlanRequest(BaseModel):
++    sites: list[SingleLinkPlanRequest] = Field(min_length=1, max_length=500)
++    top_n: int = Field(default=3, ge=1, le=20)
++
++
++class BatchCandidate(BaseModel):
++    rank: int
++    site_code: str
++    distance_km: float
++    band: str
++    score: float
++    status: str
++    availability_percent: float
++    rain_zone: str
++    fade_margin_db: float
++    equipment_profile: str
++    risk_flags: list[str]
++
++
++class BatchSiteResult(BaseModel):
++    site_name: str
++    candidates: list[BatchCandidate]
++    error: str | None = None
++    gis_status: str | None = None
++    missing_dem_tiles: list[str] = Field(default_factory=list)
++    missing_worldcover_tiles: list[str] = Field(default_factory=list)
++
++
++class BatchPlanResult(BaseModel):
++    results: list[BatchSiteResult]
+ 
+ 
+ class CandidateLink(BaseModel):
+diff --git a/frontend/src/api.ts b/frontend/src/api.ts
+index ba09a84..62de805 100644
+--- a/frontend/src/api.ts
++++ b/frontend/src/api.ts
+@@ -17,7 +17,19 @@ export type PlanRequest = {
+   longitude: number;
+   tower_height_m: number;
+   radius_km: number;
++  min_radius_km?: number;
+   band: string;
++  rain_zone?: string;
++  antenna_diameter_m?: number;
++  equipment_profile?: string;
++  accepted_filters?: AcceptedFilters;
++};
++
++export type AcceptedFilters = {
++  reject_site_code_contains?: string | null;
++  min_site_code_number?: number | null;
++  reject_overload: boolean;
++  reject_overlink: boolean;
+ };
+ 
+ export type DemDownloadResult = {
+@@ -113,3 +125,30 @@ export async function planSingleLink(payload: PlanRequest, signal?: AbortSignal)
+   if (!response.ok) throw new Error(await response.text());
+   return response.json();
+ }
++
++export type EquipmentProfile = { profile_id: string; vendor: string; model: string; band_ghz: number; channel_bw_mhz: number; modulation: string; capacity_mbps: number; rx_threshold_dbm: number; tx_power_min_dbm: number; tx_power_max_dbm: number };
++export async function fetchEquipmentProfiles(): Promise<EquipmentProfile[]> { const response = await fetch(`${API_BASE}/equipment/profiles`); if (!response.ok) throw new Error(await response.text()); return response.json(); }
++export async function importEquipment(file: File): Promise<{ imported: number; total: number; added: number }> { const body = new FormData(); body.append("file", file); const response = await fetch(`${API_BASE}/equipment/import`, { method: "POST", body }); if (!response.ok) throw new Error(await response.text()); return response.json(); }
++
++export type BatchCandidate = {
++  rank: number; site_code: string; distance_km: number; band: string; score: number;
++  status: string; availability_percent: number; rain_zone: string; fade_margin_db: number; equipment_profile: string; risk_flags: string[];
++};
++export type BatchPlanResult = { results: Array<{ site_name: string; candidates: BatchCandidate[]; error?: string | null; gis_status?: string | null; missing_dem_tiles?: string[]; missing_worldcover_tiles?: string[] }> };
++
++export async function planBatch(sites: PlanRequest[], topN: number, signal?: AbortSignal): Promise<BatchPlanResult> {
++  const response = await fetch(`${API_BASE}/plan/batch`, {
++    method: "POST",
++    headers: { "Content-Type": "application/json" },
++    body: JSON.stringify({ sites, top_n: topN }),
++    signal
++  });
++  if (!response.ok) throw new Error(await response.text());
++  return response.json();
++}
++
++export async function downloadCentralRegionGis(): Promise<GisDownloadResult> {
++  const response = await fetch(`${API_BASE}/gis/download/central-region`, { method: "POST" });
++  if (!response.ok) throw new Error(await response.text());
++  return response.json();
++}

@@ -1,0 +1,45 @@
+﻿diff --git a/scripts/netchat_bot.py b/scripts/netchat_bot.py
+index 50f0a6b..4c556e6 100644
+--- a/scripts/netchat_bot.py
++++ b/scripts/netchat_bot.py
+@@ -32,19 +32,16 @@ from scripts.netchat_send import (  # noqa: E402
+     netchat_ssl_verify,
+     required_env,
+ )
+-from scripts.telegram_bot import ensure_gis, format_result, parse_plan, parse_site_lookup  # noqa: E402
+-from app.database.session import SessionLocal  # noqa: E402
+-from app.services.site_lookup import site_lookup  # noqa: E402
++from scripts.telegram_bot import ensure_gis, format_result, parse_plan  # noqa: E402
+ 
+ 
+ HELP_TEXT = """MW Pre-planning NetChat
+ 
+-Lệnh:
++Lenh:
+ /plan site DN001 16.032 108.221 radius 30 height 30
+ /status
+-/site DN001
+ 
+-Bot sẽ tự kiểm tra GIS. Nếu thiếu DEM/WorldCover, bot tải GIS trước rồi mới chạy planning.
++Bot se tu kiem tra GIS. Neu thieu DEM/WorldCover, bot tai GIS truoc roi moi chay planning.
+ """
+ 
+ 
+@@ -141,16 +138,10 @@ class NetChatBot:
+                 root_id=root_id,
+             )
+             return
+-        lookup_code = parse_site_lookup(message)
+-        if lookup_code:
+-            with SessionLocal() as db:
+-                reply = site_lookup(db, lookup_code)
+-            await self.send_chunks(session, channel_id, reply, root_id=root_id)
+-            return
+         if message.startswith("/plan") or "plan" in message.lower() or "site" in message.lower() or "quy hoạch" in message.lower():
+             request = parse_plan(message)
+             if request is None:
+-                await self.send_chunks(session, channel_id, "Sai cú pháp. Ví dụ: /plan site DN001 16.032 108.221 radius 30 height 30", root_id=root_id)
++                await self.send_chunks(session, channel_id, "Sai cu phap. Vi du: /plan site DN001 16.032 108.221 radius 30 height 30", root_id=root_id)
+                 return
+             await self.send_chunks(session, channel_id, f"Checking GIS for {request.site_name}...", root_id=root_id)
+             try:

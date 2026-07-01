@@ -1,0 +1,294 @@
+﻿diff --git a/backend/app/api/routes.py b/backend/app/api/routes.py
+index c4e57b9..34391e7 100644
+--- a/backend/app/api/routes.py
++++ b/backend/app/api/routes.py
+@@ -28,6 +28,7 @@ from app.services.mw_links import antenna_rule_table, import_existing_links_csv
+ from app.services.sites import import_sites_csv, list_sites, search_sites
+ from app.services.status import get_system_status
+ from app.services.equipment import import_equipment_profiles, list_equipment_profiles
++from app.services.gis_preflight import check_batch_gis_coverage
+ from app.terrain.downloader import download_central_region_gis_tiles, download_dem_tiles
+ from app.terrain.grid import generate_grid
+ from app.terrain.profile import generate_profile
+@@ -154,9 +155,27 @@ async def single_link_plan(
+ @router.post("/plan/batch", response_model=BatchPlanResult)
+ async def batch_plan(request_body: BatchPlanRequest, http_request: Request, db: Session = Depends(get_db)) -> BatchPlanResult:
+     results = []
+-    for site in request_body.sites:
++    gis_results = check_batch_gis_coverage(request_body.sites)
++    for site_index, site in enumerate(request_body.sites):
+         if await http_request.is_disconnected():
+             break
++        gis_result = gis_results.get(f"{site_index}:{site.site_name}")
++        if gis_result and gis_result.blocks_planning:
++            results.append(
++                BatchSiteResult(
++                    site_name=site.site_name,
++                    candidates=[],
++                    error=gis_result.error_message,
++                    gis_status=gis_result.status,
++                    dem_tiles=gis_result.dem_tiles,
++                    missing_dem_tiles=gis_result.missing_dem_tiles,
++                    missing_worldcover_tiles=gis_result.missing_worldcover_tiles,
++                    bad_dem_tiles=gis_result.bad_dem_tiles,
++                    suspect_dem_tiles=gis_result.suspect_dem_tiles,
++                    unknown_dem_tiles=gis_result.unknown_dem_tiles,
++                )
++            )
++            continue
+         try:
+             plan = await plan_single_link_cancellable(db, site, http_request.is_disconnected)
+             if plan.candidate_links:
+@@ -184,7 +203,9 @@ async def batch_plan(request_body: BatchPlanRequest, http_request: Request, db:
+                     rain_zone=item.link.rain_zone,
+                     fade_margin_db=item.link.fade_margin_db,
+                     equipment_profile=item.link.equipment_profile,
+-                    risk_flags=item.link.risk_flags + ([note] if note else []),
++                    risk_flags=item.link.risk_flags
++                    + (gis_result.warning_flags if gis_result else [])
++                    + ([note] if note else []),
+                     calloff=item.calloff,
+                 )
+                 for index, item in enumerate(batch_links[: request_body.top_n], 1)
+@@ -194,6 +215,13 @@ async def batch_plan(request_body: BatchPlanRequest, http_request: Request, db:
+                     site_name=site.site_name,
+                     candidates=candidates,
+                     error=None if candidates else "Không tìm thấy candidate trong bán kính quét.",
++                    gis_status=gis_result.status if gis_result else None,
++                    dem_tiles=gis_result.dem_tiles if gis_result else [],
++                    missing_dem_tiles=gis_result.missing_dem_tiles if gis_result else [],
++                    missing_worldcover_tiles=gis_result.missing_worldcover_tiles if gis_result else [],
++                    bad_dem_tiles=gis_result.bad_dem_tiles if gis_result else [],
++                    suspect_dem_tiles=gis_result.suspect_dem_tiles if gis_result else [],
++                    unknown_dem_tiles=gis_result.unknown_dem_tiles if gis_result else [],
+                 )
+             )
+         except Exception as exc:
+@@ -202,6 +230,13 @@ async def batch_plan(request_body: BatchPlanRequest, http_request: Request, db:
+                     site_name=site.site_name,
+                     candidates=[],
+                     error=str(exc),
++                    gis_status=gis_result.status if gis_result else None,
++                    dem_tiles=gis_result.dem_tiles if gis_result else [],
++                    missing_dem_tiles=gis_result.missing_dem_tiles if gis_result else [],
++                    missing_worldcover_tiles=gis_result.missing_worldcover_tiles if gis_result else [],
++                    bad_dem_tiles=gis_result.bad_dem_tiles if gis_result else [],
++                    suspect_dem_tiles=gis_result.suspect_dem_tiles if gis_result else [],
++                    unknown_dem_tiles=gis_result.unknown_dem_tiles if gis_result else [],
+                 )
+             )
+     return BatchPlanResult(results=results)
+diff --git a/backend/app/services/gis_preflight.py b/backend/app/services/gis_preflight.py
+index d557fc7..257046f 100644
+--- a/backend/app/services/gis_preflight.py
++++ b/backend/app/services/gis_preflight.py
+@@ -1,10 +1,11 @@
+ from __future__ import annotations
+ 
+-from dataclasses import dataclass
++from dataclasses import dataclass, field
+ from pathlib import Path
+ 
+ from app.core.config import get_planner_config, get_settings
+ from app.schemas.planning import SingleLinkPlanRequest
++from app.terrain.dem_health import HEALTH_BAD, HEALTH_OK, HEALTH_SUSPECT, load_health_report
+ from app.terrain.downloader import _worldcover_tiles_for_radius, tiles_for_radius
+ 
+ 
+@@ -14,10 +15,19 @@ class GisPreflightResult:
+     worldcover_tiles: list[str]
+     missing_dem_tiles: list[str]
+     missing_worldcover_tiles: list[str]
++    bad_dem_tiles: list[str] = field(default_factory=list)
++    suspect_dem_tiles: list[str] = field(default_factory=list)
++    unknown_dem_tiles: list[str] = field(default_factory=list)
+ 
+     @property
+     def ok(self) -> bool:
+-        return not self.missing_dem_tiles and not self.missing_worldcover_tiles
++        return (
++            not self.missing_dem_tiles
++            and not self.missing_worldcover_tiles
++            and not self.bad_dem_tiles
++            and not self.suspect_dem_tiles
++            and not self.unknown_dem_tiles
++        )
+ 
+     @property
+     def status(self) -> str:
+@@ -25,17 +35,42 @@ class GisPreflightResult:
+             if self.worldcover_tiles:
+                 return "DEM+WORLDCOVER_OK"
+             return "DEM_OK"
++        if self.missing_dem_tiles or self.missing_worldcover_tiles:
++            return "GIS_MISSING"
++        if self.bad_dem_tiles:
++            return "GIS_BAD"
++        if self.suspect_dem_tiles or self.unknown_dem_tiles:
++            return "GIS_SUSPECT"
+         return "GIS_MISSING"
+ 
++    @property
++    def blocks_planning(self) -> bool:
++        return self.status in {"GIS_MISSING", "GIS_BAD"}
++
+     @property
+     def error_message(self) -> str:
+         parts: list[str] = []
+         if self.missing_dem_tiles:
+-            parts.append(f"Thiếu DEM: {', '.join(self.missing_dem_tiles)}")
++            parts.append(f"Thieu DEM: {', '.join(self.missing_dem_tiles)}")
+         if self.missing_worldcover_tiles:
+-            parts.append(f"Thiếu WorldCover: {', '.join(self.missing_worldcover_tiles)}")
++            parts.append(f"Thieu WorldCover: {', '.join(self.missing_worldcover_tiles)}")
++        if self.bad_dem_tiles:
++            parts.append(f"DEM loi: {', '.join(self.bad_dem_tiles)}")
++        if self.suspect_dem_tiles:
++            parts.append(f"DEM nghi ngo: {', '.join(self.suspect_dem_tiles)}")
++        if self.unknown_dem_tiles:
++            parts.append(f"DEM chua audit: {', '.join(self.unknown_dem_tiles)}")
+         return "; ".join(parts)
+ 
++    @property
++    def warning_flags(self) -> list[str]:
++        flags: list[str] = []
++        if self.suspect_dem_tiles:
++            flags.append(f"DEM_SUSPECT_TILE:{'|'.join(self.suspect_dem_tiles)}")
++        if self.unknown_dem_tiles:
++            flags.append(f"DEM_HEALTH_UNKNOWN:{'|'.join(self.unknown_dem_tiles)}")
++        return flags
++
+ 
+ def _existing_dem_tiles(dem_directory: Path) -> set[str]:
+     if not dem_directory.exists():
+@@ -52,9 +87,9 @@ def _existing_worldcover_tiles(worldcover_directory: Path) -> set[str]:
+ def check_batch_gis_coverage(sites: list[SingleLinkPlanRequest]) -> dict[str, GisPreflightResult]:
+     """Fast GIS preflight for batch planning.
+ 
+-    The planner samples terrain along links to candidates within the search radius.
+-    Checking the full search window per input site is a small over-estimate, but it
+-    avoids opening raster files and prevents slow per-link fallback surprises.
++    Full DEM raster audit is intentionally a separate operation. Batch planning
++    only checks required tile names against the latest health report so the
++    request stays fast and avoids repeated raster scans.
+     """
+ 
+     settings = get_settings()
+@@ -64,6 +99,7 @@ def check_batch_gis_coverage(sites: list[SingleLinkPlanRequest]) -> dict[str, Gi
+ 
+     existing_dem = _existing_dem_tiles(settings.dem_directory)
+     existing_worldcover = _existing_worldcover_tiles(settings.worldcover_directory)
++    health_report = load_health_report()
+ 
+     results: dict[str, GisPreflightResult] = {}
+     for index, site in enumerate(sites):
+@@ -74,10 +110,28 @@ def check_batch_gis_coverage(sites: list[SingleLinkPlanRequest]) -> dict[str, Gi
+             if require_worldcover
+             else []
+         )
++        missing_dem_tiles = [tile for tile in dem_tiles if tile not in existing_dem]
++        bad_dem_tiles: list[str] = []
++        suspect_dem_tiles: list[str] = []
++        unknown_dem_tiles: list[str] = []
++        for tile in [tile for tile in dem_tiles if tile in existing_dem]:
++            health = health_report.get(tile)
++            if health is None:
++                unknown_dem_tiles.append(tile)
++            elif health.status == HEALTH_BAD:
++                bad_dem_tiles.append(tile)
++            elif health.status == HEALTH_SUSPECT:
++                suspect_dem_tiles.append(tile)
++            elif health.status != HEALTH_OK:
++                unknown_dem_tiles.append(tile)
++
+         results[f"{index}:{site.site_name}"] = GisPreflightResult(
+             dem_tiles=dem_tiles,
+             worldcover_tiles=worldcover_tiles,
+-            missing_dem_tiles=[tile for tile in dem_tiles if tile not in existing_dem],
++            missing_dem_tiles=missing_dem_tiles,
+             missing_worldcover_tiles=[tile for tile in worldcover_tiles if tile not in existing_worldcover],
++            bad_dem_tiles=bad_dem_tiles,
++            suspect_dem_tiles=suspect_dem_tiles,
++            unknown_dem_tiles=unknown_dem_tiles,
+         )
+     return results
+diff --git a/backend/tests/test_gis_preflight.py b/backend/tests/test_gis_preflight.py
+index 9888849..a60a0a9 100644
+--- a/backend/tests/test_gis_preflight.py
++++ b/backend/tests/test_gis_preflight.py
+@@ -2,6 +2,7 @@ from pathlib import Path
+ 
+ from app.schemas.planning import SingleLinkPlanRequest
+ from app.services.gis_preflight import check_batch_gis_coverage
++from app.terrain.dem_health import DemTileHealth
+ from app.terrain.downloader import central_region_gis_tiles
+ 
+ 
+@@ -22,6 +23,7 @@ def test_batch_gis_preflight_reports_missing_tiles(tmp_path, monkeypatch):
+     )()
+     monkeypatch.setattr("app.services.gis_preflight.get_settings", lambda: settings)
+     monkeypatch.setattr("app.services.gis_preflight.get_planner_config", lambda: {"candidate_radius_km": 1})
++    monkeypatch.setattr("app.services.gis_preflight.load_health_report", lambda: {})
+ 
+     result = check_batch_gis_coverage(
+         [SingleLinkPlanRequest(site_name="NEW001", latitude=12.6, longitude=108.0, radius_km=1)]
+@@ -54,6 +56,13 @@ def test_batch_gis_preflight_accepts_existing_tiles(tmp_path, monkeypatch):
+     )()
+     monkeypatch.setattr("app.services.gis_preflight.get_settings", lambda: settings)
+     monkeypatch.setattr("app.services.gis_preflight.get_planner_config", lambda: {"candidate_radius_km": 1})
++    monkeypatch.setattr(
++        "app.services.gis_preflight.load_health_report",
++        lambda: {
++            "N12E107": DemTileHealth(tile="N12E107", status="OK"),
++            "N12E108": DemTileHealth(tile="N12E108", status="OK"),
++        },
++    )
+ 
+     result = check_batch_gis_coverage(
+         [SingleLinkPlanRequest(site_name="NEW001", latitude=12.6, longitude=108.0, radius_km=1)]
+@@ -65,6 +74,45 @@ def test_batch_gis_preflight_accepts_existing_tiles(tmp_path, monkeypatch):
+     assert coverage.missing_worldcover_tiles == []
+ 
+ 
++def test_batch_gis_preflight_flags_bad_dem_tiles(tmp_path, monkeypatch):
++    dem_dir = tmp_path / "dem"
++    worldcover_dir = tmp_path / "worldcover"
++    dem_dir.mkdir()
++    worldcover_dir.mkdir()
++    for tile in ("N12E107", "N12E108"):
++        Path(dem_dir / f"{tile}.tif").touch()
++    Path(worldcover_dir / "ESA_WorldCover_10m_2020_v100_N12E105_Map.tif").touch()
++    Path(worldcover_dir / "ESA_WorldCover_10m_2020_v100_N12E108_Map.tif").touch()
++
++    settings = type(
++        "Settings",
++        (),
++        {
++            "dem_directory": dem_dir,
++            "worldcover_directory": worldcover_dir,
++            "worldcover_apply_height_offsets": True,
++        },
++    )()
++    monkeypatch.setattr("app.services.gis_preflight.get_settings", lambda: settings)
++    monkeypatch.setattr("app.services.gis_preflight.get_planner_config", lambda: {"candidate_radius_km": 1})
++    monkeypatch.setattr(
++        "app.services.gis_preflight.load_health_report",
++        lambda: {
++            "N12E107": DemTileHealth(tile="N12E107", status="BAD", reason="NO_VALID_SAMPLES"),
++            "N12E108": DemTileHealth(tile="N12E108", status="OK"),
++        },
++    )
++
++    result = check_batch_gis_coverage(
++        [SingleLinkPlanRequest(site_name="NEW001", latitude=12.6, longitude=108.0, radius_km=1)]
++    )
++    coverage = result["0:NEW001"]
++
++    assert coverage.status == "GIS_BAD"
++    assert coverage.blocks_planning is True
++    assert coverage.bad_dem_tiles == ["N12E107"]
++
++
+ def test_central_region_gis_tiles_cover_quang_tri_to_lam_dong_band():
+     dem_tiles, worldcover_tiles = central_region_gis_tiles()
+ 
