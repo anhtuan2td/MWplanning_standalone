@@ -90,24 +90,25 @@ class NetChatBot:
             data = json.loads(text)
             return data["id"]
 
-    async def send_reply(self, session: aiohttp.ClientSession, channel_id: str, message: str, root_id: str | None = None) -> None:
+    async def send_reply(self, session: aiohttp.ClientSession, channel_id: str, message: str, reply_to_id: str | None = None) -> None:
         headers, cookies = self.auth()
         payload: dict[str, Any] = {
             "channel_id": channel_id,
             "message": message,
+            "root_id": "",
         }
-        if root_id and self.reply_in_thread:
-            payload["root_id"] = root_id
+        if reply_to_id:
+            payload["reply_to_id"] = reply_to_id
 
         async with session.post(f"{self.base_url}/api/v4/posts", headers=headers, cookies=cookies, json=payload, ssl=self.ssl_context) as response:
             text = await response.text()
             if response.status >= 400:
                 raise RuntimeError(f"POST /posts failed {response.status}: {text}")
 
-    async def send_chunks(self, session: aiohttp.ClientSession, channel_id: str, text: str, root_id: str | None = None) -> None:
+    async def send_chunks(self, session: aiohttp.ClientSession, channel_id: str, text: str, reply_to_id: str | None = None) -> None:
         chunks = [text[index : index + 3900] for index in range(0, len(text), 3900)] or [""]
         for chunk in chunks:
-            await self.send_reply(session, channel_id, chunk, root_id=root_id)
+            await self.send_reply(session, channel_id, chunk, reply_to_id=reply_to_id)
 
     async def handle_post(self, session: aiohttp.ClientSession, event: dict[str, Any], bot_user_id: str) -> None:
         data = event.get("data", {})
@@ -119,7 +120,7 @@ class NetChatBot:
         post_id = post.get("id")
         user_id = post.get("user_id")
         channel_id = post.get("channel_id")
-        root_id = post.get("root_id") or post_id
+        reply_to_id = post_id
         message = (post.get("message") or "").strip()
 
         if user_id == bot_user_id or (self.bot_user_id and user_id == self.bot_user_id):
@@ -130,7 +131,7 @@ class NetChatBot:
         print(f"NetChat message from {user_id} in {channel_id}: {message}", flush=True)
 
         if message in {"/help", "help"}:
-            await self.send_chunks(session, channel_id, HELP_TEXT, root_id=root_id)
+            await self.send_chunks(session, channel_id, HELP_TEXT, reply_to_id=reply_to_id)
             return
         if message == "/status":
             settings = get_settings()
@@ -138,29 +139,29 @@ class NetChatBot:
                 session,
                 channel_id,
                 f"DB: {os.environ['MW_DATABASE_URL']}\nDEM: {settings.dem_directory}\nWorldCover: {settings.worldcover_directory}",
-                root_id=root_id,
+                reply_to_id=reply_to_id,
             )
             return
         lookup_code = parse_site_lookup(message)
         if lookup_code:
             with SessionLocal() as db:
                 reply = site_lookup(db, lookup_code)
-            await self.send_chunks(session, channel_id, reply, root_id=root_id)
+            await self.send_chunks(session, channel_id, reply, reply_to_id=reply_to_id)
             return
         if message.startswith("/plan") or "plan" in message.lower() or "site" in message.lower() or "quy hoạch" in message.lower():
             request = parse_plan(message)
             if request is None:
-                await self.send_chunks(session, channel_id, "Sai cú pháp. Ví dụ: /plan site DN001 16.032 108.221 radius 30 height 30", root_id=root_id)
+                await self.send_chunks(session, channel_id, "Sai cú pháp. Ví dụ: /plan site DN001 16.032 108.221 radius 30 height 30", reply_to_id=reply_to_id)
                 return
-            await self.send_chunks(session, channel_id, f"Checking GIS for {request.site_name}...", root_id=root_id)
+            await self.send_chunks(session, channel_id, f"Checking GIS for {request.site_name}...", reply_to_id=reply_to_id)
             try:
                 gis_message = await asyncio.to_thread(ensure_gis, request)
-                await self.send_chunks(session, channel_id, gis_message, root_id=root_id)
-                await self.send_chunks(session, channel_id, "Running planner...", root_id=root_id)
+                await self.send_chunks(session, channel_id, gis_message, reply_to_id=reply_to_id)
+                await self.send_chunks(session, channel_id, "Running planner...", reply_to_id=reply_to_id)
                 result_message = await asyncio.to_thread(format_result, request)
-                await self.send_chunks(session, channel_id, result_message, root_id=root_id)
+                await self.send_chunks(session, channel_id, result_message, reply_to_id=reply_to_id)
             except Exception as exc:
-                await self.send_chunks(session, channel_id, f"Failed: {exc}", root_id=root_id)
+                await self.send_chunks(session, channel_id, f"Failed: {exc}", reply_to_id=reply_to_id)
 
     async def websocket_loop(self, session: aiohttp.ClientSession, bot_user_id: str) -> None:
         headers, _ = self.auth()
